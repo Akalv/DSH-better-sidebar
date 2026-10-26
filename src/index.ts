@@ -31,6 +31,7 @@ import { resolveSessionPath } from './session-path.ts'
 import { createWorkspaceFile, mkdirWorkspaceEntry, renameWorkspaceEntry, removeWorkspaceEntry, writeWorkspaceText, writeWorkspaceUpload } from './fs-operations.ts'
 import { ensureWorkspacePath } from './path-security.ts'
 import { searchFiles } from './fs-search.ts'
+import { findDefinitions } from './symbols.ts'
 import { compileExcludePatterns } from './exclude-patterns.ts'
 import { decodeHtmlUrl } from './html-route.ts'
 import { registerBundleRoute } from './bundle-route.ts'
@@ -755,6 +756,22 @@ function buildApi(
       const record = payload as { exclude?: unknown }
       const query = requireString(payload, 'query')
       return searchFiles(cwd, query, { exclude: compileExcludePatterns(record.exclude, cwd) })
+    },
+    // Ctrl+Click / F12 in the editor: "where is this name declared?".
+    // Deliberately not a language server — symbols.ts resolves the word with
+    // the current file's declaration table, the current file's imports, and a
+    // budgeted root scan, then ranks by proximity. An unknown word returns an
+    // empty candidate list (absence is a normal answer, not an error), and the
+    // client renders that as a quiet status line instead of a failure toast.
+    'symbols.definition': async (payload) => {
+      const { cwd } = await cwdOf(payload)
+      const selected = selectedRepoOf(payload)
+      const path = await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, 'path'), selected))
+      const word = requireString(payload, 'word')
+      const record = payload as { line?: unknown; column?: unknown } | null
+      const line = typeof record?.line === 'number' && Number.isFinite(record.line) ? Math.floor(record.line) : undefined
+      const column = typeof record?.column === 'number' && Number.isFinite(record.column) ? Math.floor(record.column) : undefined
+      return await findDefinitions({ root: cwd, file: path, word, line, column })
     },
     'fs.read': async (payload) => {
       const { cwd } = await cwdOf(payload)
