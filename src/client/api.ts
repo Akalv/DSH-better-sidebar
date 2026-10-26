@@ -425,6 +425,23 @@ function openExternal(payload: OpenExternalPayload): Promise<OpenExternalResult>
   }
 }
 
+/** One declaration candidate of `symbols.definition`. `source` is the whole
+ *  trimmed line, so a picker can show it without a second read. */
+export interface SymbolHit {
+  path: string
+  line: number
+  column: number
+  name: string
+  kind: string
+  source: string
+  score: number
+}
+
+export interface DefinitionResult {
+  candidates: SymbolHit[]
+  truncated: boolean
+}
+
 /** The sidebar API surface (session scope threaded through every call). */
 export const api = {
   sessionCwd: (scope: SessionScope, signal?: AbortSignal) =>
@@ -452,6 +469,11 @@ export const api = {
    *  tree; a pasted direct-open path is explicit intent and skips it). */
   fsSearch: (scope: SessionScope, query: string, exclude?: readonly string[], signal?: AbortSignal) =>
     call<{ matches: string[]; dirs: string[]; truncated: boolean }>('fs.search', scopePayload(scope, { query, exclude }), signal),
+  /** Ctrl+Click / F12: where is `word` declared? Heuristic (declaration tables,
+   *  the file's own imports, a budgeted root scan) — not a language server, so
+   *  an unresolvable name answers with an empty list rather than an error. */
+  symbolsDefinition: (scope: SessionScope, request: { path: string; word: string; line?: number; column?: number }, signal?: AbortSignal) =>
+    call<DefinitionResult>('symbols.definition', scopePayload(scope, { ...request }), signal),
   fsRead: (scope: SessionScope, path: string, signal?: AbortSignal) =>
     call<FsReadResult>('fs.read', scopePayload(scope, { path }), signal),
   /** One page of a large text file, for the read-only paged preview.

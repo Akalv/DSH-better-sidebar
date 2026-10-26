@@ -39,6 +39,8 @@ export const ru: Record<string, string> = {
   editor: 'Редактор',
   navBack: 'Назад',
   navForward: 'Вперёд',
+  navNoDefinition: "Определение не найдено",
+  navDefinitionPicker: "Выбрать определение",
   editorBreadcrumbs: 'Путь к файлу',
   editorExplorer: 'Способ открытия файлов',
   editorExplorerDesc: 'Управление способом открытия файлов',

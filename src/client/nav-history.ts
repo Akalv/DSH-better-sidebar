@@ -29,6 +29,10 @@ export interface NavLocation {
   path: string
   /** The 1-based line the visit landed on, when it came from a line reference. */
   line?: number
+  /** The 1-based column a definition jump landed on (line references carry no
+   *  column). Part of the replay payload but NOT of a location's identity: the
+   *  same file:line read from a different column is the same place. */
+  column?: number
   /** Display title remembered at visit time (tab titles are path-derived). */
   title?: string
 }
@@ -61,14 +65,17 @@ export function sameNavLocation(a: NavLocation, b: NavLocation): boolean {
 /** Coerce an untrusted value into a location, or null when it cannot be one. */
 export function sanitizeNavLocation(value: unknown): NavLocation | null {
   if (value === null || typeof value !== 'object') return null
-  const record = value as { path?: unknown; line?: unknown; title?: unknown }
+  const record = value as { path?: unknown; line?: unknown; column?: unknown; title?: unknown }
   const path = typeof record.path === 'string' ? record.path.trim() : ''
   if (path === '') return null
   const line = typeof record.line === 'number' && Number.isInteger(record.line) && record.line > 0
     ? record.line
     : undefined
+  const column = typeof record.column === 'number' && Number.isInteger(record.column) && record.column > 0
+    ? record.column
+    : undefined
   const title = typeof record.title === 'string' && record.title !== '' ? record.title : undefined
-  return { path, line, title }
+  return { path, line, column, title }
 }
 
 /** Parse one persisted record (an untrusted JSON blob) into a snapshot. */
@@ -147,7 +154,7 @@ export class NavHistory {
     const { entries, index } = this.snapshot
     const current = entries[index]
     if (current !== undefined && sameNavLocation(current, next) && at - this.lastPushAt <= NAV_MERGE_MS) {
-      if (current.line === next.line && current.title === next.title) return
+      if (current.line === next.line && current.column === next.column && current.title === next.title) return
       const updated = entries.slice()
       updated[index] = next
       this.commit({ entries: updated, index })

@@ -43,6 +43,8 @@ export const th: Record<string, string> = {
   editor: 'ตัวแก้ไข',
   navBack: 'ย้อนกลับ',
   navForward: 'ถัดไป',
+  navNoDefinition: "ไม่พบคำจำกัดความ",
+  navDefinitionPicker: "เลือกคำจำกัดความ",
   editorBreadcrumbs: 'พาธไฟล์',
   editorExplorer: 'พฤติกรรมการเปิดไฟล์',
   editorExplorerDesc: 'ควบคุมวิธีเปิดไฟล์',

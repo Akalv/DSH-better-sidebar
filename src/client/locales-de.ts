@@ -29,6 +29,8 @@ export const de: Record<string, string> = {
   editor: 'Editor',
   navBack: 'Zurück',
   navForward: 'Vorwärts',
+  navNoDefinition: "Keine Definition gefunden",
+  navDefinitionPicker: "Definition auswählen",
   editorBreadcrumbs: 'Dateipfad',
   editorExplorer: 'Dateiöffnungsverhalten',
   editorExplorerDesc: 'Steuert, wie Dateien geöffnet werden',

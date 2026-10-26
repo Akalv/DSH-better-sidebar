@@ -26,6 +26,8 @@ export const sv: Record<string, string> = {
   editor: 'Editor',
   navBack: 'Tillbaka',
   navForward: 'Framåt',
+  navNoDefinition: "Ingen definition hittad",
+  navDefinitionPicker: "Välj definition",
   editorBreadcrumbs: 'Filsökväg',
   editorExplorer: 'Filers öppningsbeteende',
   editorExplorerDesc: 'Styr hur filer öppnas',

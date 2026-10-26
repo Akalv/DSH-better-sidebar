@@ -43,6 +43,8 @@ export const ja: Record<string, string> = {
   editor: 'エディター',
   navBack: '戻る',
   navForward: '進む',
+  navNoDefinition: "定義が見つかりません",
+  navDefinitionPicker: "定義を選択",
   editorBreadcrumbs: 'ファイルパス',
   editorExplorer: 'ファイルの開き方',
   editorExplorerDesc: 'ファイルを開く方法を制御',

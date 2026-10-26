@@ -45,6 +45,8 @@ export const pl: Record<string, string> = {
   editor: 'Edytor',
   navBack: 'Wstecz',
   navForward: 'Dalej',
+  navNoDefinition: "Nie znaleziono definicji",
+  navDefinitionPicker: "Wybierz definicję",
   editorBreadcrumbs: 'Ścieżka pliku',
   editorExplorer: 'Sposób otwierania plików',
   editorExplorerDesc: 'Kontroluje sposób otwierania plików',

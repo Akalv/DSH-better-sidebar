@@ -43,6 +43,8 @@ export const hi: Record<string, string> = {
   editor: 'एडिटर',
   navBack: 'पीछे',
   navForward: 'आगे',
+  navNoDefinition: "कोई परिभाषा नहीं मिली",
+  navDefinitionPicker: "परिभाषा चुनें",
   editorBreadcrumbs: 'फ़ाइल पथ',
   editorExplorer: 'फ़ाइल खोलने का तरीका',
   editorExplorerDesc: 'फ़ाइल खोलने के तरीके को नियंत्रित करें',

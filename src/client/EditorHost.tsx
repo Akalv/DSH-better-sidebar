@@ -159,19 +159,19 @@ export function EditorHost(props: {
   // memory would swallow the second request. Every arm bumps the epoch and the
   // viewer lands whenever the epoch it receives changes; consuming clears the
   // arm, so a reload cannot re-fire the same navigation.
-  const [landing, setLanding] = useState<{ line: number; epoch: number } | null>(null)
+  const [landing, setLanding] = useState<{ line: number; column?: number; epoch: number } | null>(null)
   const landingEpoch = useRef(0)
-  const requestLanding = useCallback((line: number | undefined) => {
+  const requestLanding = useCallback((line: number | undefined, column?: number) => {
     if (line === undefined) return
     landingEpoch.current += 1
-    setLanding({ line, epoch: landingEpoch.current })
+    setLanding({ line, column, epoch: landingEpoch.current })
   }, [])
   const onLineConsumed = useCallback(() => { setLanding(null) }, [])
   // A location this host armed for the NEXT path effect. In-place switching
   // (merged mode) has no `tab.line` to carry it: updateTab drops the transient
   // line with the old path, so the jump has to be remembered across that one
   // render.
-  const requestedLanding = useRef<{ path: string; line: number } | null>(null)
+  const requestedLanding = useRef<{ path: string; line: number; column?: number } | null>(null)
   // Arm from the record: a reference open arrives as `tab.line` (re-delivered
   // on every notification, hence the effect only reacts to it CHANGING). A
   // file switch without a line clears whatever the previous file left armed.
@@ -179,7 +179,7 @@ export function EditorHost(props: {
     const requested = requestedLanding.current
     if (requested !== null && requested.path === path) {
       requestedLanding.current = null
-      requestLanding(requested.line)
+      requestLanding(requested.line, requested.column)
       return
     }
     if (tab.line === undefined) { setLanding(null); return }
@@ -314,8 +314,15 @@ export function EditorHost(props: {
   // `record` is memoized by the hook, so this effect fires on a real
   // navigation (a visibility flip or a path/line change), not every render.
   const nav = useNavHistory(scope.sessionId)
+  // A location this host already recorded itself (a definition jump, which has
+  // a column the record cannot carry). The record effect below consumes it on
+  // the path change instead of pushing a second, line-less entry.
+  const explicitRecord = useRef<NavLocation | null>(null)
   useEffect(() => {
     if (!visible || path === '' || isDir) return
+    const explicit = explicitRecord.current
+    explicitRecord.current = null
+    if (explicit !== null && explicit.path === path) { nav.record(explicit); return }
     nav.record({ path, line: tab.line, title })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, path, tab.line, isDir, title])
@@ -324,16 +331,46 @@ export function EditorHost(props: {
    *  or the per-path dedupe open takes over (split mode), and either way the
    *  entry's line lands. */
   const jumpTo = (target: NavLocation): void => {
-    if (target.path === path) { requestLanding(target.line); return }
+    if (target.path === path) {
+      requestLanding(target.line, target.column)
+      return
+    }
     if (inPlace) {
       // A file another tab type claims keeps its own tab; the history entry
       // then re-opens that tab rather than swallowing it into this editor.
       if (openClaimedNativeFile(ctx, scope.sessionId, scope.cwd, target.path)) return
-      requestedLanding.current = target.line === undefined ? null : { path: target.path, line: target.line }
+      requestedLanding.current = target.line === undefined
+        ? null
+        : { path: target.path, line: target.line, column: target.column }
+      explicitRecord.current = target.line === undefined
+        ? null
+        : { path: target.path, line: target.line, column: target.column, title: baseName(target.path) }
       service?.updateTab(tab.id, { path: target.path, title: baseName(target.path) }, scope.sessionId)
       return
     }
     openSidebarFile(ctx, scope.sessionId, target.path, target.line)
+  }
+
+  /**
+   * A jump asked for by the VIEWER (Ctrl+Click / F12 in the text editor). The
+   * host keeps the open semantics in one place: same file just lands, `side`
+   * asks for a rightward split, everything else is a history-style jump. The
+   * record is made here (not only in the effect) because a same-file jump does
+   * not change `path` and would otherwise leave the stack without the target
+   * line.
+   */
+  const openLocation = (location: { path: string; line?: number; column?: number }, disposition: 'default' | 'side' = 'default'): void => {
+    if (disposition === 'side') {
+      explicitRecord.current = null
+      openFileSide(location.path)
+      return
+    }
+    if (location.path === path) {
+      requestLanding(location.line, location.column)
+      if (location.line !== undefined) nav.record({ path: location.path, line: location.line, column: location.column, title })
+      return
+    }
+    jumpTo(location)
   }
 
   /** Breadcrumb gesture: reveal a directory in the docked tree (expand it and
@@ -750,6 +787,8 @@ export function EditorHost(props: {
             // and ignores it. The epoch lets the SAME file:line land twice.
             line: landing?.line,
             lineEpoch: landing?.epoch,
+            column: landing?.column,
+            onOpenLocation: openLocation,
             onLineConsumed,
             content: load.content,
             size: load.size,

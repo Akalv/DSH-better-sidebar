@@ -41,6 +41,8 @@ export const nl: Record<string, string> = {
   editor: 'Editor',
   navBack: 'Terug',
   navForward: 'Vooruit',
+  navNoDefinition: "Geen definitie gevonden",
+  navDefinitionPicker: "Definitie kiezen",
   editorBreadcrumbs: 'Bestandspad',
   editorExplorer: 'Bestand openingsgedrag',
   editorExplorerDesc: 'Bepaalt hoe bestanden worden geopend',

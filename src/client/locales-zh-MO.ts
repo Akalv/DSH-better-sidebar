@@ -58,6 +58,8 @@ export const zhMO: Record<string, string> = {
   editor: '編輯器',
   navBack: '後退',
   navForward: '前進',
+  navNoDefinition: "未找到定義",
+  navDefinitionPicker: "選擇定義",
   editorBreadcrumbs: '檔案路徑',
   editorExplorer: '檔案開啟方式',
   editorExplorerDesc: '控制檔案開啟方式',

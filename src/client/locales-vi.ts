@@ -43,6 +43,8 @@ export const vi: Record<string, string> = {
   editor: 'Trình soạn thảo',
   navBack: 'Quay lại',
   navForward: 'Tiếp theo',
+  navNoDefinition: "Không tìm thấy định nghĩa",
+  navDefinitionPicker: "Chọn định nghĩa",
   editorBreadcrumbs: 'Đường dẫn tệp',
   editorExplorer: 'Cách mở tệp',
   editorExplorerDesc: 'Kiểm soát cách mở tệp',

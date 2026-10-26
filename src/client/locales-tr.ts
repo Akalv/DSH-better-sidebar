@@ -43,6 +43,8 @@ export const tr: Record<string, string> = {
   editor: 'Düzenleyici',
   navBack: 'Geri',
   navForward: 'İleri',
+  navNoDefinition: "Tanım bulunamadı",
+  navDefinitionPicker: "Tanım seç",
   editorBreadcrumbs: 'Dosya yolu',
   editorExplorer: 'Dosya açma davranışı',
   editorExplorerDesc: 'Dosyaların açılma biçimini denetler',

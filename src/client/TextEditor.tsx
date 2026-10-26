@@ -28,7 +28,7 @@ import {
   useEditorGitGutter,
   type GitGutterHost,
 } from './editor-git-gutter.ts'
-import { api, htmlUrl, SidebarApiError } from './api.ts'
+import { api, htmlUrl, SidebarApiError, type SymbolHit } from './api.ts'
 import { hostTransportBase } from './desktop-env.ts'
 import { markdownPreviewSource } from './markdown-frontmatter.ts'
 import { rewriteLocalImageUrls } from './markdown-images.ts'
@@ -40,6 +40,7 @@ import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
 import { appendToDraft } from './conversation-draft.ts'
 import { useSelectionPopup } from './selection-popup.ts'
+import { definitionGestures, type DefinitionDisposition, type DefinitionTarget } from './nav-definition.ts'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
 import { analyzeMarkdownHtml } from './markdown-html.ts'
 import { LazyMermaidMarkdown, MarkdownDocument, type MarkdownHtmlMedia } from './MarkdownHtml.tsx'
@@ -48,6 +49,7 @@ import { useMarkdownSurface } from './use-markdown-surface.ts'
 import { MdToc } from './md-toc.tsx'
 import { splitMermaidBlocks } from './mermaid-blocks.ts'
 import { localeSignature, t } from './locales.ts'
+import { relativeTo } from './paths.ts'
 import { HTML_IFRAME_SANDBOX } from './html-preview.ts'
 import type { EditorToolbarState, FileViewerProps } from './service.ts'
 import css from './sidebar.module.css'
@@ -71,6 +73,18 @@ const previewScrollKey = (scope: { sessionId: string }, path: string): string =>
  * at the top again — a cosmetic loss, never a wrong document.
  */
 export const PREVIEW_SCROLL_CAP = 64
+
+/** Clamp a pointer-anchored popup into the viewport (it is `position: fixed`,
+ *  so a gesture near the right/bottom edge must flip, not overflow). */
+function anchoredStyle(at: { x: number; y: number }): { left: number; top: number } {
+  const width = 460
+  const height = 260
+  if (typeof window === 'undefined') return { left: at.x, top: at.y }
+  return {
+    left: Math.min(Math.max(at.x, 8), Math.max(8, window.innerWidth - width - 12)),
+    top: Math.min(Math.max(at.y + 12, 8), Math.max(8, window.innerHeight - height - 12)),
+  }
+}
 
 /**
  * Remember one document's preview offset. The write moves the key to the back
@@ -106,7 +120,7 @@ function sameDocument(a: string, b: string): boolean {
 }
 
 export function TextEditor(props: FileViewerProps) {
-  const { ctx, scope, path, viewerId, content, size, largeFile, line, lineEpoch } = props
+  const { ctx, scope, path, viewerId, content, size, largeFile, line, lineEpoch, column, onOpenLocation } = props
   const [mode, setMode] = useState<ViewMode>('preview')
   /** The editor's current text (null while clean); preview renders this. */
   const [draft, setDraft] = useState<string | null>(null)
@@ -117,6 +131,20 @@ export function TextEditor(props: FileViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<CodeMirrorView | null>(null)
   const savingRef = useRef(false)
+  /** Definition result picker (Ctrl/Cmd+Click / F12 on a name with several
+   *  declarations). Anchored at the gesture's viewport coordinates. */
+  const [definitionPicker, setDefinitionPicker] = useState<{ at: { x: number; y: number }; candidates: SymbolHit[]; active: number } | null>(null)
+  /** A transient "no definition found" note under the pointer. */
+  const [navNotice, setNavNotice] = useState<{ at: { x: number; y: number }; text: string } | null>(null)
+  const navNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (navNoticeTimer.current !== null) clearTimeout(navNoticeTimer.current)
+    }
+  }, [])
   /** The mtime the draft is based on (`null` = the file did not exist yet).
    *  Seeded from the load, refreshed by every successful save, and reset by
    *  the file-switch effect. */
@@ -271,6 +299,93 @@ export function TextEditor(props: FileViewerProps) {
     previewScrollRef.current = previewScrollOf(scope, path)
   }, [scope, path])
 
+  /** Show a short note under the pointer, replacing any previous one. */
+  const showNavNotice = useCallback((text: string, at: { x: number; y: number }) => {
+    setNavNotice({ at, text })
+    if (navNoticeTimer.current !== null) clearTimeout(navNoticeTimer.current)
+    navNoticeTimer.current = setTimeout(() => {
+      setNavNotice(null)
+      navNoticeTimer.current = null
+    }, 2600)
+  }, [])
+
+  /**
+   * Resolve one definition gesture. The host owns where the result OPENS
+   * (`onOpenLocation`); this side only decides 1 hit → jump, several → picker,
+   * none → a quiet note (an unresolvable name is normal, not an error).
+   */
+  const requestDefinition = useCallback((target: DefinitionTarget, disposition: DefinitionDisposition) => {
+    if (onOpenLocation === undefined) return
+    api.symbolsDefinition(scope, { path, word: target.word, line: target.line, column: target.column })
+      .then((result) => {
+        if (!mountedRef.current) return
+        const hit = result.candidates[0]
+        if (hit === undefined) {
+          showNavNotice(t('navNoDefinition'), target.at)
+          return
+        }
+        if (result.candidates.length === 1 || disposition === 'side') {
+          onOpenLocation({ path: hit.path, line: hit.line, column: hit.column }, disposition)
+          return
+        }
+        setDefinitionPicker({ at: target.at, candidates: result.candidates, active: 0 })
+      })
+      .catch(() => {
+        if (mountedRef.current) showNavNotice(t('navNoDefinition'), target.at)
+      })
+  }, [onOpenLocation, path, scope, showNavNotice])
+
+  // The gesture extension is built once per document (the state-creation
+  // effect below); it dispatches through this ref so the newest callback is
+  // always the one that runs.
+  const definitionRef = useRef(requestDefinition)
+  useEffect(() => { definitionRef.current = requestDefinition })
+
+  const chooseDefinition = (hit: SymbolHit): void => {
+    onOpenLocation?.({ path: hit.path, line: hit.line, column: hit.column })
+    setDefinitionPicker(null)
+  }
+
+  // Picker keyboard: ↑/↓ move, Enter opens, Escape dismisses. Captured so the
+  // editor's own Escape (simplifySelection) cannot eat the dismissal.
+  useEffect(() => {
+    if (definitionPicker === null) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDefinitionPicker(null)
+        return
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        setDefinitionPicker((current) => current === null
+          ? null
+          : { ...current, active: (current.active + step + current.candidates.length) % current.candidates.length })
+        return
+      }
+      if (event.key === 'Enter') {
+        const hit = definitionPicker.candidates[definitionPicker.active]
+        if (hit === undefined) return
+        event.preventDefault()
+        chooseDefinition(hit)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('keydown', onKey, true) }
+    // chooseDefinition only closes over stable callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [definitionPicker, onOpenLocation])
+
+  // A press anywhere else dismisses the picker. The opening gesture already
+  // called preventDefault, so its own press cannot reach this listener.
+  useEffect(() => {
+    if (definitionPicker === null) return
+    const onDown = (): void => { setDefinitionPicker(null) }
+    window.addEventListener('mousedown', onDown)
+    return () => { window.removeEventListener('mousedown', onDown) }
+  }, [definitionPicker])
+
   // Create the CodeMirror editor once the content is loaded. The view owns
   // the document; React only tracks dirty state through the update listener
   // (the draft — the preview's text — is snapshotted from the live view on
@@ -327,6 +442,10 @@ export function TextEditor(props: FileViewerProps) {
           ...defaultKeymap,
           ...historyKeymap,
         ]),
+        // Ctrl/Cmd+Click and F12: "go to definition" (nav-definition.ts). Built
+        // with the document, but dispatching through the ref above so a new
+        // resolver never forces the view (and the draft) to rebuild.
+        definitionGestures((target, disposition) => { definitionRef.current(target, disposition) }),
         // Selection popup (the code and markdown editors): a non-empty
         // selection anchors the floating "add to conversation" button above
         // its head. Scrolling (geometry/viewport change) or losing focus
@@ -473,7 +592,11 @@ export function TextEditor(props: FileViewerProps) {
     // Out-of-range references clamp to the last line rather than throwing —
     // the file can have changed since the link was written.
     const doc = view.state.doc
-    const target = doc.line(Math.min(Math.max(line, 1), doc.lines)).from
+    const targetLine = doc.line(Math.min(Math.max(line, 1), doc.lines))
+    // A definition jump names a column too; a `path:line` reference does not
+    // (and a column past the line's end clamps, like an out-of-range line).
+    const offset = column === undefined ? 0 : Math.min(Math.max(column - 1, 0), targetLine.length)
+    const target = targetLine.from + offset
     // Position by writing the editor's OWN scroller (after a fresh measure)
     // instead of CodeMirror's scrollIntoView: that path walks every scrollable
     // ancestor — and even the window when the browser is zoomed
@@ -507,7 +630,7 @@ export function TextEditor(props: FileViewerProps) {
     // The reveal reads the live view ref; `markdown`/`html` are derived from
     // `viewerId`, which the view-creation effect already keys on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, path, line, lineEpoch, mode, props.onLineConsumed])
+  }, [content, path, line, lineEpoch, column, mode, props.onLineConsumed])
 
   // Scheme flip: re-theme in place (the compartment holds only the
   // scheme-dependent extensions; everything else is untouched).
@@ -1007,6 +1130,35 @@ export function TextEditor(props: FileViewerProps) {
         >
           {t('addToConversation')}
         </button>,
+        document.body,
+      )}
+      {definitionPicker !== null && createPortal(
+        <div
+          className={css.navPicker}
+          style={anchoredStyle(definitionPicker.at)}
+          role="listbox"
+          aria-label={t('navDefinitionPicker')}
+        >
+          {definitionPicker.candidates.map((hit, index) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === definitionPicker.active}
+              key={`${hit.path}:${hit.line}:${index}`}
+              className={clsx(css.navPickerRow, index === definitionPicker.active && css.navPickerRowActive)}
+              onMouseDown={(event) => { event.preventDefault() }}
+              onClick={() => { chooseDefinition(hit) }}
+            >
+              <span className={css.navPickerKind}>{hit.kind}</span>
+              <span className={css.navPickerSource}>{hit.source}</span>
+              <span className={css.navPickerPath}>{scope.cwd === undefined ? hit.path : relativeTo(scope.cwd, hit.path)}:{hit.line}</span>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+      {navNotice !== null && createPortal(
+        <div className={css.navNotice} style={anchoredStyle(navNotice.at)} role="status">{navNotice.text}</div>,
         document.body,
       )}
     </>

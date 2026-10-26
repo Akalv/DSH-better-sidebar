@@ -44,6 +44,8 @@ export const ar: Record<string, string> = {
   editor: 'المحرّر',
   navBack: 'رجوع',
   navForward: 'تقدم',
+  navNoDefinition: "لم يتم العثور على تعريف",
+  navDefinitionPicker: "اختر تعريفًا",
   editorBreadcrumbs: 'مسار الملف',
   editorExplorer: 'سلوك فتح الملفات',
   editorExplorerDesc: 'يتحكّم في كيفية فتح الملفات',

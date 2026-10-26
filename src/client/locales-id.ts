@@ -41,6 +41,8 @@ export const id: Record<string, string> = {
   editor: 'Editor',
   navBack: 'Kembali',
   navForward: 'Maju',
+  navNoDefinition: "Definisi tidak ditemukan",
+  navDefinitionPicker: "Pilih definisi",
   editorBreadcrumbs: 'Jalur file',
   editorExplorer: 'Perilaku buka berkas',
   editorExplorerDesc: 'Mengontrol cara berkas dibuka',

@@ -320,6 +320,16 @@ export interface FileViewerProps {
    *  (the text editor does) tell a re-request from a re-delivery of the same
    *  one. Viewers that ignore it keep the one-shot-per-(path,line) behavior. */
   lineEpoch?: number
+  /** Internal: the 1-based column that belongs to {@link line} — a definition
+   *  jump names both, a `path:line` reference only a line. Applied together
+   *  with `line`, and absent whenever `line` is. */
+  column?: number
+  /** Internal: the viewer's "open this location" request (Ctrl+Click / F12 in
+   *  the text editor). The HOST owns the open semantics — in-place switch,
+   *  per-path dedupe tab, a claiming native tab type — so a viewer never
+   *  resolves paths or tabs itself. `disposition: 'side'` asks for a rightward
+   *  split (Alt+Click). Absent means the viewer offers no jump gesture. */
+  onOpenLocation?: (location: { path: string; line?: number; column?: number }, disposition?: 'default' | 'side') => void
   /** The viewer reports that it has APPLIED the `line` it was handed (or that
    *  the line does not apply to it), and the host stops handing it out: the
    *  line is one navigation, not a mode of the file. The host has to own that

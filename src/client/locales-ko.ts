@@ -35,6 +35,8 @@ export const ko: Record<string, string> = {
   editor: '편집기',
   navBack: '뒤로',
   navForward: '앞으로',
+  navNoDefinition: "정의를 찾을 수 없음",
+  navDefinitionPicker: "정의 선택",
   editorBreadcrumbs: '파일 경로',
   editorExplorer: '파일 열기 방식',
   editorExplorerDesc: '파일이 열리는 방식을 제어합니다',

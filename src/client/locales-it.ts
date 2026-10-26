@@ -34,6 +34,8 @@ export const it: Record<string, string> = {
   editor: 'Editor',
   navBack: 'Indietro',
   navForward: 'Avanti',
+  navNoDefinition: "Nessuna definizione trovata",
+  navDefinitionPicker: "Scegli definizione",
   editorBreadcrumbs: 'Percorso file',
   editorExplorer: 'Modalità di apertura dei file',
   editorExplorerDesc: 'Controlla come si aprono i file',
