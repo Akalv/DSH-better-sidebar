@@ -313,6 +313,13 @@ export interface FileViewerProps {
    *  positions the reader there once, on arrival; every other viewer ignores
    *  it. Absent on an ordinary open. */
   line?: number
+  /** Internal: monotonically increasing epoch for {@link line}. Every
+   *  navigation request bumps it, so the SAME file:line requested twice (jump
+   *  away, then back to a history entry) lands twice. The host clears `line`
+   *  once consumed, and the epoch lets a viewer that keeps its own memory
+   *  (the text editor does) tell a re-request from a re-delivery of the same
+   *  one. Viewers that ignore it keep the one-shot-per-(path,line) behavior. */
+  lineEpoch?: number
   /** The viewer reports that it has APPLIED the `line` it was handed (or that
    *  the line does not apply to it), and the host stops handing it out: the
    *  line is one navigation, not a mode of the file. The host has to own that

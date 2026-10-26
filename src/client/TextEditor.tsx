@@ -106,7 +106,7 @@ function sameDocument(a: string, b: string): boolean {
 }
 
 export function TextEditor(props: FileViewerProps) {
-  const { ctx, scope, path, viewerId, content, size, largeFile, line } = props
+  const { ctx, scope, path, viewerId, content, size, largeFile, line, lineEpoch } = props
   const [mode, setMode] = useState<ViewMode>('preview')
   /** The editor's current text (null while clean); preview renders this. */
   const [draft, setDraft] = useState<string | null>(null)
@@ -451,7 +451,11 @@ export function TextEditor(props: FileViewerProps) {
     if (content === undefined) return
     const view = viewRef.current
     if (view === null) return
-    const key = `${path}#${line}`
+    // The host bumps `lineEpoch` on every navigation REQUEST, so a re-request
+    // of the same file:line (a history replay) is distinguishable from a
+    // re-delivery of the one already honoured. Without an epoch (an external
+    // viewer host) the old (path, line) key keeps its one-shot behavior.
+    const key = lineEpoch === undefined ? `${path}#${line}` : `#${lineEpoch}`
     if (landedAtRef.current === key) return
     // A markdown/html/jsonl file opens in a preview, which has no source lines
     // to put a cursor on. The reference asked for source, so land in the
@@ -503,7 +507,7 @@ export function TextEditor(props: FileViewerProps) {
     // The reveal reads the live view ref; `markdown`/`html` are derived from
     // `viewerId`, which the view-creation effect already keys on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, path, line, mode, props.onLineConsumed])
+  }, [content, path, line, lineEpoch, mode, props.onLineConsumed])
 
   // Scheme flip: re-theme in place (the compartment holds only the
   // scheme-dependent extensions; everything else is untouched).

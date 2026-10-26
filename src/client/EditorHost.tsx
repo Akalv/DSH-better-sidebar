@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createElement } from 'react'
 import clsx from 'clsx'
-import { IconCheckOutlineRegular, IconFolderOpenRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCheckOutlineRegular, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconFolderOpenRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../context-types.ts'
 import { api, mediaUrl, type SessionScope } from './api.ts'
 import { BinaryDownload } from './binary-download.tsx'
@@ -34,6 +34,8 @@ import { clearEditorDirty, setEditorDirty } from './editor-dirty.ts'
 import { baseName } from './FileTree.tsx'
 import { createFrameBatcher } from './frame-batcher.ts'
 import { openClaimedNativeFile, openSidebarFile } from './sidebar-file.ts'
+import { Breadcrumbs } from './Breadcrumbs.tsx'
+import { useNavHistory, type NavLocation } from './nav-history.ts'
 import { openWithSshActive, openWithUrl, parseOpenWithConfig, resolveOpenWithTargets } from './open-with.ts'
 import { fileOpKey, useFileOpStream } from './ops-stream.ts'
 import { updatePluginSettings } from './plugin-settings.ts'
@@ -44,7 +46,7 @@ import { relativeTo } from './paths.ts'
 import { resolveSidebarPath } from './paths.ts'
 import { clearRetargetedPath, closePathTabs, consumeRetargetedPath, pathTabKey, retargetPathTabs } from './tree-mutations.ts'
 import type { EditorToolbarControls, EditorToolbarState, FileViewerDescriptor } from './service.ts'
-import { firstLeaf, insertLeafAt, leafWithTab, mintTabId, type SidebarStore, type SidebarTab } from './state.ts'
+import { firstLeaf, insertLeafAt, leafWithTab, mintTabId, revealPaths, type SidebarStore, type SidebarTab } from './state.ts'
 import css from './sidebar.module.css'
 
 type EditorLoad =
@@ -140,7 +142,7 @@ export function EditorHost(props: {
   // with the same path/scope — the only reload entry besides open/close.
   const [reloadSeq, setReloadSeq] = useState(0)
 
-  // The reference's landing line, SPENT once per open (#826).
+  // The reference's landing line, ARMED once per navigation (#826).
   //
   // `tab.line` is one navigation, but the record keeps it for as long as the
   // tab is open (the host re-delivers its navigation on every notification).
@@ -149,15 +151,40 @@ export function EditorHost(props: {
   // empty journal, so it would apply the same line again. For markdown/html
   // that means re-forcing the file into the editor, and since the preview
   // button reloads by design (#167 part B), the reader could never get back to
-  // preview. This host survives every reload, so the spent line is remembered
-  // here; the key carries the line, so a NEW reference re-arms it, and a file
-  // switch drops it (coming back to a file is a fresh open).
-  const [spentLine, setSpentLine] = useState<string | null>(null)
-  const lineKey = tab.line === undefined ? null : `${path}#${tab.line}`
-  const onLineConsumed = useCallback(() => {
-    if (lineKey !== null) setSpentLine(lineKey)
-  }, [lineKey])
-  useEffect(() => { setSpentLine(null) }, [path])
+  // preview. This host survives every reload, so it arms the landing here.
+  //
+  // The armed value carries an EPOCH rather than a `${path}#${line}` key: the
+  // SAME file:line can be requested twice (jump away, then back to a history
+  // entry, or re-click a reference after reading around it), and a key-only
+  // memory would swallow the second request. Every arm bumps the epoch and the
+  // viewer lands whenever the epoch it receives changes; consuming clears the
+  // arm, so a reload cannot re-fire the same navigation.
+  const [landing, setLanding] = useState<{ line: number; epoch: number } | null>(null)
+  const landingEpoch = useRef(0)
+  const requestLanding = useCallback((line: number | undefined) => {
+    if (line === undefined) return
+    landingEpoch.current += 1
+    setLanding({ line, epoch: landingEpoch.current })
+  }, [])
+  const onLineConsumed = useCallback(() => { setLanding(null) }, [])
+  // A location this host armed for the NEXT path effect. In-place switching
+  // (merged mode) has no `tab.line` to carry it: updateTab drops the transient
+  // line with the old path, so the jump has to be remembered across that one
+  // render.
+  const requestedLanding = useRef<{ path: string; line: number } | null>(null)
+  // Arm from the record: a reference open arrives as `tab.line` (re-delivered
+  // on every notification, hence the effect only reacts to it CHANGING). A
+  // file switch without a line clears whatever the previous file left armed.
+  useEffect(() => {
+    const requested = requestedLanding.current
+    if (requested !== null && requested.path === path) {
+      requestedLanding.current = null
+      requestLanding(requested.line)
+      return
+    }
+    if (tab.line === undefined) { setLanding(null); return }
+    requestLanding(tab.line)
+  }, [path, tab.line, requestLanding])
 
   // Manual refresh (issue #167 + PR #228): a dirty draft is dropped by the
   // reload (the editor instance remounts), so confirm before discarding it.
@@ -280,6 +307,44 @@ export function EditorHost(props: {
       const { node, leafId } = insertLeafAt(state.bottomSplits, pane.id, 'row', fresh, false)
       return { ...state, bottomSplits: node, activePane: leafId }
     })
+  }
+
+  // Navigation history (nav-history.ts): IDEA-style back/forward. Every file
+  // this window settles on becomes an entry; the header's arrows replay them.
+  // `record` is memoized by the hook, so this effect fires on a real
+  // navigation (a visibility flip or a path/line change), not every render.
+  const nav = useNavHistory(scope.sessionId)
+  useEffect(() => {
+    if (!visible || path === '' || isDir) return
+    nav.record({ path, line: tab.line, title })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, path, tab.line, isDir, title])
+
+  /** Replay one history location: this window switches in place (merged mode)
+   *  or the per-path dedupe open takes over (split mode), and either way the
+   *  entry's line lands. */
+  const jumpTo = (target: NavLocation): void => {
+    if (target.path === path) { requestLanding(target.line); return }
+    if (inPlace) {
+      // A file another tab type claims keeps its own tab; the history entry
+      // then re-opens that tab rather than swallowing it into this editor.
+      if (openClaimedNativeFile(ctx, scope.sessionId, scope.cwd, target.path)) return
+      requestedLanding.current = target.line === undefined ? null : { path: target.path, line: target.line }
+      service?.updateTab(tab.id, { path: target.path, title: baseName(target.path) }, scope.sessionId)
+      return
+    }
+    openSidebarFile(ctx, scope.sessionId, target.path, target.line)
+  }
+
+  /** Breadcrumb gesture: reveal a directory in the docked tree (expand it and
+   *  its ancestors, open the panel). It never switches the file. */
+  const revealDir = (dir: string): void => {
+    store.reduce((state) => {
+      const next = revealPaths(state, scope.cwd, [dir])
+      const expanded = next.expanded.includes(dir) ? next.expanded : [...next.expanded, dir]
+      return { ...next, expanded }
+    })
+    if (!treeOpen) patchMeta(ctx, tab, scope.sessionId, { treeOpen: true })
   }
 
   /** The context menu's "open with" action: reveal the path in the OS file
@@ -583,6 +648,28 @@ export function EditorHost(props: {
   return (
     <div className={css.editor}>
       <div className={css.editorHeader}>
+        <div className={css.editorNavButtons}>
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label={t('navBack')}
+            title={t('navBack')}
+            disabled={!nav.canBack}
+            onClick={() => { const target = nav.back(); if (target !== null) jumpTo(target) }}
+          >
+            <IconChevronLeftOutlineRegular size={14} />
+          </button>
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label={t('navForward')}
+            title={t('navForward')}
+            disabled={!nav.canForward}
+            onClick={() => { const target = nav.forward(); if (target !== null) jumpTo(target) }}
+          >
+            <IconChevronRightOutlineRegular size={14} />
+          </button>
+        </div>
         <EditorPathInput key={path} path={path} cwd={scope.cwd} onOpen={openFile} />
         {toolbar?.modes === true && (
           <div className={css.editorModeToggle}>
@@ -648,6 +735,7 @@ export function EditorHost(props: {
           <IconFolderOpenRegular size={14} />
         </button>
       </div>
+      <Breadcrumbs cwd={scope.cwd} path={path} onOpenDir={revealDir} />
       <div className={css.editorBody}>
         <div className={css.editorMain}>
           {showEmpty && <div className={css.editorPlaceholder}>{t('editorEmptyHint')}</div>}
@@ -657,10 +745,11 @@ export function EditorHost(props: {
           {!showEmpty && load.status === 'ready' && createElement(load.viewer.component, {
             ctx, store, scope, path, title,
             viewerId: load.viewer.id,
-            // The reference's landing line, if the address carried one (#826)
-            // AND this open has not spent it yet. Only the text viewer acts on
-            // it; a markdown/html/image viewer gets the field and ignores it.
-            line: lineKey !== null && lineKey !== spentLine ? tab.line : undefined,
+            // The armed landing (see the state block above): only the text
+            // viewer acts on it; a markdown/html/image viewer gets the field
+            // and ignores it. The epoch lets the SAME file:line land twice.
+            line: landing?.line,
+            lineEpoch: landing?.epoch,
             onLineConsumed,
             content: load.content,
             size: load.size,
