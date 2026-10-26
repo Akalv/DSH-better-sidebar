@@ -528,7 +528,12 @@ interface FileViewerProps {
   customData?: unknown     // fetchStrategy='custom' 时（load() 的返回值）
   // 引用带行号时才有（#826，见 §0「地址里的行号」）：一次性导航，不是文件的属性
   line?: number            // 1 基行号（如 `a.c#L131` / `a.c:131`）；定位用得上的 viewer 消费它
+  lineEpoch?: number       // 同一处行号被再次导航时的序号；变了就重新定位（内部协作字段）
+  column?: number          // 1 基列号（`:行:列` 引用 / 定义跳转都会带回来）
   onLineConsumed?: () => void // 已消费该 line 的回报；不调用则每次加载都会重新下发（默认不消费）
+  /** 把一处 `path[:line[:column]]` 交给宿主打开（内置文本编辑器的 Ctrl/Cmd+Click · F12 · Alt+Click 走这里）。
+   *  disposition='side' 表示在右侧新分栏打开；缺省落在当前窗口。 */
+  onOpenLocation?: (location: { path: string; line?: number; column?: number }, disposition?: 'default' | 'side') => void
   // 以下为内置文本编辑器与 EditorHost 内部协作字段，外部 viewer 忽略：
   toolbar?: 'self' | 'host'
   visible?: boolean        // 本 tab 是否在屏（原生 tab 停驻时仍挂载）
@@ -538,6 +543,8 @@ interface FileViewerProps {
 }
 ```
 
+> **跳转定义（导航条改造）**：内置 `code` viewer 认领 `F12` / `Ctrl(⌘)+Click` / `Alt+Click`：从光标或指针下取出标识符，交给宿主 `symbols.definition`（`src/symbols.ts`：按扩展名分语言族的声明正则 + `rg` 单次扫描、`import` 邻近排序，零新增依赖），命中一处直接 `onOpenLocation`，命中多处弹选择浮层，零命中给一条约 2.6 秒的轻提示（`navNoDefinition`）。`Alt+Click` 传 `disposition:'side'`，在右侧新分栏打开。**外部 viewer 不实现这个通道不影响既有行为**：`onOpenLocation` 缺省时手势层不拦截事件，普通点击与选区照旧。返回体 `{ candidates: SymbolHit[], truncated }`，`SymbolHit = { path, line, column, name, kind, source, score }`，最多 5 个候选。
+>
 > **超大文件（v0.26.0 起，`truncated` 已被取代）**：文件超过编辑上限（5 MiB，见 `src/editor-limits.ts` 的 `MAX_EDITABLE_BYTES`）时，`fs.read` 不再回一份被截断的文档，而是 `{ kind: 'too-large', size, mtimeMs, head }` —— **不带 `content`**。宿主把这个结果交给命中的 viewer 时，`content` 缺席、`largeFile: { size }` 到位（见 `planFsReadOutcome`）。内置的文本 viewer 据此渲染只读分页预览（`LargeFileView`），并提供下载出口；**你的 viewer 必须容忍 `content === undefined`**：要么自己处理 `largeFile`（分页预览 / 提示），要么把状态回给 `onToolbarState` 让宿主收起保存按钮。旧的 `truncated` 布尔字段与 `EditorToolbarState.truncated` 都已删除——「拿到半份文档但看起来能编辑」这个状态本身没有了，这正是它被删掉的原因（#732：保存半份文档会毁掉文件尾部）。
 >
 > **分页读取**：`fs.readPage({ sessionId, cwd?, path, offset })` 按字节窗口返回一页文本（宿主按行对齐，并在同一个文件内锁定宽字符编码），返回 `{ kind:'text', text, offset, nextOffset, eof, size, mtimeMs, encoding }`。消费方式就是**只向前追加**：把每页的 `text` 接到一起，下一次请求用上一页的 `nextOffset` 作为 `offset`，直到 `eof`。因此**必须串行**（下一页的偏移就是上一页的响应），也**不能跳到末尾**——随机访问需要打开时先扫全文件建索引，而那正是分页要避免的开销。内置预览在这之上加了两个策略：滚到底自动追加下一页，以及一条按**渲染行数**设的上限（`LargeFileView` 的 `MAX_PREVIEW_ROWS`），到顶后停止追加并提示下载。

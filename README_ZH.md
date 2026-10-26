@@ -207,6 +207,9 @@ export function apply(ctx: Context) {
 | 文件内查找 / 替换 | `Ctrl/Cmd + F` |
 | 查找下一个 / 上一个 | `Ctrl/Cmd + G` / `Shift + Ctrl/Cmd + G` |
 | 选中下一个相同片段 | `Ctrl/Cmd + D` |
+| 跳转到定义 | `Ctrl/Cmd + 点击` / `F12` |
+| 在右侧分栏打开 | `Alt + 点击` |
+| 后退 / 前进位置 | 编辑器顶部 `◀` / `▶` |
 | Git 提交 | `Ctrl + Enter` |
 | 关闭 Tab | 鼠标中键 |
 | 拆分/合并分栏 | 拖 Tab 到分栏边缘 / 中间 |

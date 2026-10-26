@@ -207,6 +207,9 @@ export function apply(ctx: Context) {
 | Find / replace in file | `Ctrl/Cmd + F` |
 | Find next / previous | `Ctrl/Cmd + G` / `Shift + Ctrl/Cmd + G` |
 | Select next occurrence | `Ctrl/Cmd + D` |
+| Go to definition | `Ctrl/Cmd + Click` / `F12` |
+| Open in a side split | `Alt + Click` |
+| Back / forward | `◀` / `▶` in the editor bar |
 | Git commit | `Ctrl + Enter` |
 | Close tab | Middle-click |
 | Split / merge panes | Drag a tab to a pane edge / center |
