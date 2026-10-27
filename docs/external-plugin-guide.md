@@ -543,6 +543,9 @@ interface FileViewerProps {
 }
 ```
 
+
+> **快速打开与大纲**：头部条的 `Ctrl/Cmd+P` 走宿主 `nav.find`（`{ query, limit? }` → `{ matches: { path, score, line?, column?, name?, kind? }[], total, truncated, source }`，`query` 以 `@` 开头时匹配声明），`Ctrl/Cmd+Alt+O` 走 `symbols.outline`（`{ path }` → `{ symbols: SymbolHit[], truncated, cwd }`）。两条都是只读路由，索引按 root 缓存 120s，首次查询时才构建；插件自己的面板可以直接调它们，无需自建索引。
+
 > **跳转定义（导航条改造）**：内置 `code` viewer 认领 `F12` / `Ctrl(⌘)+Click` / `Alt+Click`：从光标或指针下取出标识符，交给宿主 `symbols.definition`（`src/symbols.ts`：按扩展名分语言族的声明正则 + `rg` 单次扫描、`import` 邻近排序，零新增依赖），命中一处直接 `onOpenLocation`，命中多处弹选择浮层，零命中给一条约 2.6 秒的轻提示（`navNoDefinition`）。`Alt+Click` 传 `disposition:'side'`，在右侧新分栏打开。**外部 viewer 不实现这个通道不影响既有行为**：`onOpenLocation` 缺省时手势层不拦截事件，普通点击与选区照旧。返回体 `{ candidates: SymbolHit[], truncated }`，`SymbolHit = { path, line, column, name, kind, source, score }`，最多 5 个候选。
 >
 > **超大文件（v0.26.0 起，`truncated` 已被取代）**：文件超过编辑上限（5 MiB，见 `src/editor-limits.ts` 的 `MAX_EDITABLE_BYTES`）时，`fs.read` 不再回一份被截断的文档，而是 `{ kind: 'too-large', size, mtimeMs, head }` —— **不带 `content`**。宿主把这个结果交给命中的 viewer 时，`content` 缺席、`largeFile: { size }` 到位（见 `planFsReadOutcome`）。内置的文本 viewer 据此渲染只读分页预览（`LargeFileView`），并提供下载出口；**你的 viewer 必须容忍 `content === undefined`**：要么自己处理 `largeFile`（分页预览 / 提示），要么把状态回给 `onToolbarState` 让宿主收起保存按钮。旧的 `truncated` 布尔字段与 `EditorToolbarState.truncated` 都已删除——「拿到半份文档但看起来能编辑」这个状态本身没有了，这正是它被删掉的原因（#732：保存半份文档会毁掉文件尾部）。

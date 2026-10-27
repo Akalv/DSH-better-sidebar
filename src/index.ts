@@ -31,7 +31,8 @@ import { resolveSessionPath } from './session-path.ts'
 import { createWorkspaceFile, mkdirWorkspaceEntry, renameWorkspaceEntry, removeWorkspaceEntry, writeWorkspaceText, writeWorkspaceUpload } from './fs-operations.ts'
 import { ensureWorkspacePath } from './path-security.ts'
 import { searchFiles } from './fs-search.ts'
-import { findDefinitions } from './symbols.ts'
+import { findDefinitions, setDefinitionIndexLookup } from './symbols.ts'
+import { definitionFromIndex, find as findInIndex, outlineOf } from './file-index.ts'
 import { compileExcludePatterns } from './exclude-patterns.ts'
 import { decodeHtmlUrl } from './html-route.ts'
 import { registerBundleRoute } from './bundle-route.ts'
@@ -771,7 +772,25 @@ function buildApi(
       const record = payload as { line?: unknown; column?: unknown } | null
       const line = typeof record?.line === 'number' && Number.isFinite(record.line) ? Math.floor(record.line) : undefined
       const column = typeof record?.column === 'number' && Number.isFinite(record.column) ? Math.floor(record.column) : undefined
+      // The staged lookup answers from the open file / its imports / its
+      // directory. A project table built by quick open is used when it is
+      // already warm; nothing here builds one, so a jump never pays for a
+      // full parse it did not ask for.
       return await findDefinitions({ root: cwd, file: path, word, line, column })
+    },
+    'nav.find': async (payload) => {
+      const { cwd } = await cwdOf(payload)
+      const query = typeof (payload as { query?: unknown } | null)?.query === 'string' ? (payload as { query: string }).query : ''
+      const raw = (payload as { limit?: unknown } | null)?.limit
+      const limit = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(Math.max(Math.floor(raw), 1), 200) : 50
+      return await findInIndex(cwd, query, limit)
+    },
+    'symbols.outline': async (payload) => {
+      const { cwd } = await cwdOf(payload)
+      const selected = selectedRepoOf(payload)
+      const path = await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, 'path'), selected))
+      const result = await outlineOf(path)
+      return { symbols: result.symbols, truncated: result.truncated, cwd }
     },
     'fs.read': async (payload) => {
       const { cwd } = await cwdOf(payload)
@@ -1328,6 +1347,10 @@ async function importLegacyPrefs(
  */
 export function apply(ctx: Context, config?: SidebarConfig): void {
   const resolved = resolveSidebarConfig(config)
+  // The definition lookup's last in-memory stage: the declaration table that
+  // quick open builds. Injected here because `symbols.ts` must not import the
+  // index module that imports it.
+  setDefinitionIndexLookup(definitionFromIndex)
   // Connection owns both deployment trust and authentication; never infer or
   // bypass its policy from invocation flags or a copied trust list.
   const fence = (req: SidebarHttpRequest): boolean => ctx.connection.requestRejection(req) === undefined

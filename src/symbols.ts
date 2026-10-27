@@ -280,6 +280,85 @@ export function declarationMatch(file: string, line: string, word: string): Symb
   return null
 }
 
+/** `%W%` becomes a capture group, so a rule can name whatever it declares. */
+const NAME_CAPTURE = '([A-Za-z_$][\\w$]*)'
+
+/** Words that are never declaration names, even when a broad capture lands on
+ *  them: `if (`, `return foo(`, `new Foo(`, or a modifier column. */
+const NON_NAMES = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'throw', 'else',
+  'do', 'try', 'await', 'yield', 'function', 'class', 'interface', 'type',
+  'enum', 'const', 'let', 'var', 'val', 'def', 'fun', 'fn', 'func', 'struct',
+  'record', 'trait', 'impl', 'import', 'export', 'package', 'public', 'private',
+  'protected', 'static', 'final', 'void', 'this', 'super', 'null', 'undefined',
+  'true', 'false', 'sizeof', 'typeof', 'case', 'default', 'break', 'continue',
+])
+
+/** A line that starts like a comment declares nothing. */
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#(?!\s*(?:define|include|pragma))|--|<!--)/
+
+const NAME_SHAPE = /^[A-Za-z_$][\w$]*$/
+
+/** Rules with no declaration keyword in front of the name. They are useful for
+ *  "does this line declare `x`" (where the caller already knows the word) but
+ *  turn into noise in a nameless index: `x: number`, `foo = 1` and object
+ *  literal keys all look like declarations. The outline drops them. */
+const BARE_RULES = new Set([
+  '^\\s*%W%\\s*[:=]',
+  '^\\s*%W%\\s*(?::[^=]+)?=',
+  '^\\s*(?:local\\s+)?%W%\\s*=',
+  '^\\s*(?:export\\s+)?%W%=',
+  '^\\s*(?:(?:export|declare|public|private|protected|internal|static|final|readonly|const|let|var|val)\\s+)*%W%\\s*(?::|=)',
+  '\\b%W%\\b',
+])
+
+/** One compiled "declares SOME name" rule per family, built once from
+ *  FAMILIES so an index can be built without knowing the word in advance. */
+const NAME_RULES = new Map<string, readonly { kind: SymbolKind; re: RegExp }[]>()
+
+function nameRules(file: string): readonly { kind: SymbolKind; re: RegExp }[] {
+  const family = EXT_FAMILY[extname(file).toLowerCase()] ?? ''
+  const cached = NAME_RULES.get(family)
+  if (cached !== undefined) return cached
+  const rules = (FAMILIES[family] ?? []).filter(rule => !BARE_RULES.has(rule.pattern)).map(rule => ({
+    kind: rule.kind,
+    re: new RegExp(rule.pattern.split('%W%').join(NAME_CAPTURE)),
+  }))
+  NAME_RULES.set(family, rules)
+  return rules
+}
+
+/** Is this a file the declaration tables understand? */
+export function isSourceFile(path: string): boolean {
+  return SOURCE_EXTS.has(extname(path).toLowerCase())
+}
+
+/**
+ * Every declaration one document contains, in source order — the outline and
+ * the project symbol index both read from here. One rule match per line (the
+ * first family rule that fires decides the kind), comments skipped, and the
+ * same word-shape guards `declarationMatch` uses.
+ */
+export function declarationsIn(file: string, text: string): SymbolHit[] {
+  const rules = nameRules(file)
+  const out: SymbolHit[] = []
+  const lines = text.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.length > 400 || COMMENT_LINE.test(line)) continue
+    for (const rule of rules) {
+      if (rule.kind === 'method' && /^\s*(?:return|if|for|while|switch|catch|new|throw|else|do|try|await)\b/.test(line)) continue
+      const match = rule.re.exec(line)
+      const name = match?.[1]
+      if (name === undefined || !NAME_SHAPE.test(name) || NON_NAMES.has(name)) continue
+      out.push({ path: file, line: index + 1, column: columnOf(line, name), name, kind: rule.kind, source: line.trim(), score: 0 })
+      break
+    }
+  }
+  return out
+}
+
+
 /** Score one hit: the closer to the reader, the higher. */
 function scoreHit(hit: SymbolHit, request: { root: string; file: string; dir: string; imported: ReadonlySet<string> }): number {
   let score = 0
@@ -580,6 +659,17 @@ export function resetDefinitionCache(): void {
 
 const WORD_SHAPE = /^[A-Za-z_$][\w$]{0,63}$/
 
+/** A project-wide declaration table, when the host has one ready. */
+export type DefinitionIndexLookup = (root: string, file: string, word: string) => { hits: SymbolHit[]; truncated: boolean } | null
+
+let definitionIndex: DefinitionIndexLookup | null = null
+
+/** Test/host seam: install (or clear) the ready-index lookup used as the last
+ *  in-memory stage of `findDefinitions`. */
+export function setDefinitionIndexLookup(next: DefinitionIndexLookup | null): void {
+  definitionIndex = next
+}
+
 /**
  * Find the declaration(s) of `word` as seen from `request.file`.
  *
@@ -614,6 +704,17 @@ export async function findDefinitions(request: DefinitionRequest): Promise<Defin
   }
   if (hits.length === 0) {
     hits = await dirScan(context.dir, word).catch(() => [])
+  }
+  // A project-wide declaration table, when one has already been built, answers
+  // without touching the disk again. The lookup is injected by the host entry
+  // point (`src/index.ts`) so this module stays free of the index/route cycle;
+  // returning null means "cold", and the sweep below still applies.
+  if (hits.length === 0) {
+    const indexed = definitionIndex?.(root, file, word)
+    if (indexed !== null && indexed !== undefined) {
+      hits = indexed.hits
+      truncated = indexed.truncated
+    }
   }
   if (hits.length === 0) {
     const swept = (await rgScan(root, file, word)) ?? await walkScan(root, file, word)

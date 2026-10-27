@@ -1,7 +1,7 @@
 # 文件栏导航改造设计（IDEA 风格文件跳转）
 
 > 日期: 2026-10-26
-> 状态: P1 已交付（步骤 1–5，见 §7）；P2/P3 待排期
+> 状态: P1（步骤 1–5）与 P2 的文件索引 / 快速打开 / 符号大纲已交付（见 §7）；P3 待排期
 > 分支(拟): `feat/navigation-bar`
 > 影响面: client 核心包、editor 懒加载分块、host 侧新增 3 条只读路由
 
@@ -36,8 +36,8 @@
 | 路径面包屑 + 同级跳转 | Navigation Bar | 头部条默认态 | P1 |
 | 跳转到定义 | `Ctrl+Click` / `F12` | 编辑器内 | P1 |
 | 侧边分屏打开 | `Alt+Click` | 复用 `openFileSide` | P1 |
-| 当前文件符号 | `Ctrl+F12` | 符号面包屑 + 浮层/大纲面板 | P2 |
-| 快速打开文件 | `Ctrl+Shift+N` | `Ctrl+P` 快速面板 | P2 |
+| 当前文件符号 | `Ctrl+F12` | 符号面包屑 + 浮层/大纲面板 | P2 ✅ `Ctrl+Alt+O` |
+| 快速打开文件 | `Ctrl+Shift+N` | `Ctrl+P` 快速面板 | P2 ✅ |
 | 跳转到行 | `Ctrl+G` | 复用 CodeMirror gotoLine | P2 |
 | 跳转 import 模块 | `Ctrl+Click` | 按语言解析表 | P2 |
 | 查找用法 | `Alt+F7` | 结果列表逐条跳转 | P3 |
@@ -237,21 +237,28 @@ interface Landing { line: number; column?: number; seq: number }
 4. 打分：同文件 +100；import 的模块 +60；同目录 +30；路径更深扣分；class/interface/function +5，var −5。
 5. 返回 `{ candidates: SymbolHit[], truncated }`，`SymbolHit = { path, line, column, name, kind, source, score }`，`source` 是命中原行（用于候选列表与预览）。`truncated` 也覆盖"扫描预算用尽"（大仓库里没找到 ≠ 不存在）。
 
-### 6.5 文件索引与模糊匹配（host `nav.find`）
+### 6.5 文件索引与模糊匹配（host `nav.find` / `symbols.outline`）
 
-- 索引：优先 `rg --files --hidden -g '!.git/**'`（尊重 `.gitignore`，大仓库收益最大），15s 超时；失败回退 `fs-search.ts` 的 walker（复用 `SKIP_DIR_NAMES` 与 `maxVisited` 预算）。按 root 缓存，TTL 120s。
-- 匹配在 host 做（子序列 + 连续段加分 + 目录分隔符权重），只回传 top 50，避免两万条路径进浏览器；客户端 80ms 防抖。
-- 首次打开面板才建索引；不引入第二个 fs watcher（保持 `use-dir-watch` 单源）。
+已实现于 `src/file-index.ts`（host）：
+
+- 文件表：优先 `rg --files --hidden --path-separator / -g '!.git/**' -g '!**/<SKIP_DIR_NAMES>/**'`（尊重 `.gitignore`，大仓库收益最大），15s 超时、stdout 上限；失败回退 BFS walker（跳过点目录与 `SKIP_DIR_NAMES`，上限 50k 条并置 `truncated`）。按 root 缓存，TTL 120s，LRU 4 个 root。
+- 声明表：与文件表同一条缓存，只解析源码扩展名（`isSourceFile`），8 路并发，单文件 >512 KiB 跳过，8s 预算 / 5 万条上限，超限置 `symbolsTruncated`。**首次 `@` 查询或大纲请求时才建**，定义跳转不主动建表（一次跳转不该付整树解析的代价）。
+- 匹配全在 host 做：`fuzzyScore` = 子序列门槛 + 连续段/边界/文件名前缀/全名精确加分 + 长度与间隔惩罚；只回传 top 50，避免两万条路径进浏览器；客户端 80ms 防抖。
+- 定义优先用已就绪的声明表（同文件 +100 / 同目录 +30 / 深度惩罚），表未就绪时退回 §6.4 的分级检索。
+- 不引入第二个 fs watcher（保持 `use-dir-watch` 单源）。
+
+**实测**（插件仓 850 文件 / 18,128 条声明，走 walker 回退、未探测 rg 的最坏路径）：文件表 68.9 ms，声明表 382.8 ms，`find('editorhost')` 1.4 ms，`find('@breadcrumbTrail')` 15.7 ms，命中索引的定义跳转 38–49 ms。
 
 ### 6.6 host 路由（沿用 `src/index.ts` 的 dispatch 与 `wire.ts`）
 
 | 路由 | 入参 | 出参 |
 | --- | --- | --- |
 | `symbols.definition` | `{ path, line, column, word }` | `{ candidates, truncated }` |
-| `nav.find` | `{ query, limit? }` | `{ matches: { path, score }[], total, truncated }` |
-| `symbols.usages` | `{ path, name, limit? }` | `{ matches: { path, line, text }[], truncated }` |
+| `nav.find` | `{ query, limit? }` | `{ matches: { path, score, line?, column?, name?, kind? }[], total, truncated, source }` |
+| `symbols.outline` | `{ path }` | `{ symbols: SymbolHit[], truncated, cwd }` |
+| `symbols.usages` | `{ path, name, limit? }` | `{ matches: { path, line, text }[], truncated }`（P3） |
 
-三条都走会话作用域（`sessionQuery` + `ctx.workingDirectory`），沿用现有错误封装；与 v0.23.0 起的行为一致，不做工作区围栏（OS 权限兜底）。
+`nav.find` 的 `source` 为 `files` / `symbols`：`query` 以 `@` 开头时匹配声明（`@` 之后才是查询词）。三条只读路由都走会话作用域（`sessionQuery` + `ctx.workingDirectory`），沿用现有错误封装；与 v0.23.0 起的行为一致，不做工作区围栏（OS 权限兜底）。
 
 ### 6.7 缓存与性能预算
 
@@ -273,9 +280,10 @@ interface Landing { line: number; column?: number; seq: number }
 
 **P2**
 
-- 新增：`src/client/QuickPick.tsx`、`src/client/nav-palette.tsx`、`src/client/outline.ts`（chunk）、`src/file-index.ts`
-- 修改：`TextEditor.tsx`（符号上报）、`EditorHost.tsx`（大纲面板）、`locales.ts` + `locales-ja.ts`（新增 zh 键必须同步 ja）、`prefs.ts` + `SideCardSection.tsx`（开关/键位）
-- 测试：`tests/quick-pick.spec.tsx`、`tests/file-index.spec.ts`、`tests/outline.spec.ts`（含 §5.3 表驱动用例与 `tests/fixtures/lang/` 样例）
+- 新增（已交付）：`src/client/NavPalette.tsx`（一个组件承担快速打开与大纲两种模式）、`src/file-index.ts`、`src/client/api.ts` 的 `navFind` / `symbolsOutline`
+- 修改（已交付）：`EditorHost.tsx`（`Ctrl+P` / `Ctrl+Alt+O` 捕获 + 两个头部按钮）、`symbols.ts`（`declarationsIn` 供索引复用）、`index.ts`（`nav.find`、`symbols.outline`、`setDefinitionIndexLookup`）、`locales*.ts`（10 个新键 × 20 份字典）、`sidebar.module.css`
+- 测试（已交付）：`tests/file-index.spec.ts`、`tests/nav-palette.spec.tsx`
+- 未做：跳转到行（`Ctrl+G`）与 `Alt+F7` 用法检索（P3）。
 
 **P3**：`symbols.usages`、Peek 浮层、相关文件、可选 TS 语言服务（读工作区 `typescript`，缺失自动降级）。
 

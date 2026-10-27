@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createElement } from 'react'
 import clsx from 'clsx'
-import { IconCheckOutlineRegular, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconFolderOpenRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCheckOutlineRegular, IconChecklistOutlineRegular, IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../context-types.ts'
 import { api, mediaUrl, type SessionScope } from './api.ts'
 import { BinaryDownload } from './binary-download.tsx'
@@ -35,6 +35,7 @@ import { baseName } from './FileTree.tsx'
 import { createFrameBatcher } from './frame-batcher.ts'
 import { openClaimedNativeFile, openSidebarFile } from './sidebar-file.ts'
 import { Breadcrumbs } from './Breadcrumbs.tsx'
+import { NavPalette, type PaletteMode } from './NavPalette.tsx'
 import { useNavHistory, type NavLocation } from './nav-history.ts'
 import { openWithSshActive, openWithUrl, parseOpenWithConfig, resolveOpenWithTargets } from './open-with.ts'
 import { fileOpKey, useFileOpStream } from './ops-stream.ts'
@@ -167,6 +168,8 @@ export function EditorHost(props: {
     setLanding({ line, column, epoch: landingEpoch.current })
   }, [])
   const onLineConsumed = useCallback(() => { setLanding(null) }, [])
+  // Ctrl+P / Ctrl+Alt+O: one overlay, two sources (see NavPalette).
+  const [palette, setPalette] = useState<PaletteMode | null>(null)
   // A location this host armed for the NEXT path effect. In-place switching
   // (merged mode) has no `tab.line` to carry it: updateTab drops the transient
   // line with the old path, so the jump has to be remembered across that one
@@ -371,6 +374,26 @@ export function EditorHost(props: {
       return
     }
     jumpTo(location)
+  }
+
+  /** Ctrl+P / Ctrl+Alt+O live on the editor container, so they work from the
+   *  path input and from inside CodeMirror alike. The header carries buttons
+   *  for the same two setters: a shortcut never exists without a visible
+   *  entry point. */
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (!(event.ctrlKey || event.metaKey)) return
+    const key = event.key.toLowerCase()
+    if (event.altKey) {
+      if (key === 'o') {
+        event.preventDefault()
+        setPalette('outline')
+      }
+      return
+    }
+    if (!event.shiftKey && key === 'p') {
+      event.preventDefault()
+      setPalette('files')
+    }
   }
 
   /** Breadcrumb gesture: reveal a directory in the docked tree (expand it and
@@ -683,7 +706,7 @@ export function EditorHost(props: {
   }
 
   return (
-    <div className={css.editor}>
+    <div className={css.editor} onKeyDownCapture={onKeyDown}>
       <div className={css.editorHeader}>
         <div className={css.editorNavButtons}>
           <button
@@ -705,6 +728,24 @@ export function EditorHost(props: {
             onClick={() => { const target = nav.forward(); if (target !== null) jumpTo(target) }}
           >
             <IconChevronRightOutlineRegular size={14} />
+          </button>
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label={t('navQuickOpen')}
+            title={`${t('navQuickOpen')} (Ctrl+P)`}
+            onClick={() => setPalette('files')}
+          >
+            <IconSearchOutlineRegular size={14} />
+          </button>
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label={t('navOutline')}
+            title={`${t('navOutline')} (Ctrl+Alt+O)`}
+            onClick={() => setPalette('outline')}
+          >
+            <IconChecklistOutlineRegular size={14} />
           </button>
         </div>
         <EditorPathInput key={path} path={path} cwd={scope.cwd} onOpen={openFile} />
@@ -844,6 +885,16 @@ export function EditorHost(props: {
           </div>
         )}
       </div>
+      {palette !== null && (
+        <NavPalette
+          mode={palette}
+          scope={scope}
+          path={path}
+          onClose={() => setPalette(null)}
+          onOpenFile={openLocation}
+          onOpenFileSide={location => openLocation(location, 'side')}
+        />
+      )}
     </div>
   )
 }

@@ -442,6 +442,34 @@ export interface DefinitionResult {
   truncated: boolean
 }
 
+/** One quick-open row. File rows carry only a path; declaration rows (a query
+ *  starting with `@`) add the location and the declaration kind. */
+export interface NavMatch {
+  path: string
+  score: number
+  line?: number
+  column?: number
+  name?: string
+  kind?: string
+}
+
+export interface NavFindResult {
+  matches: NavMatch[]
+  total: number
+  truncated: boolean
+  source: 'files' | 'symbols'
+}
+
+/** One outline row of `symbols.outline` (source order, one per declaration). */
+export interface OutlineSymbol {
+  path: string
+  line: number
+  column: number
+  name: string
+  kind: string
+  source: string
+}
+
 /** The sidebar API surface (session scope threaded through every call). */
 export const api = {
   sessionCwd: (scope: SessionScope, signal?: AbortSignal) =>
@@ -474,6 +502,14 @@ export const api = {
    *  an unresolvable name answers with an empty list rather than an error. */
   symbolsDefinition: (scope: SessionScope, request: { path: string; word: string; line?: number; column?: number }, signal?: AbortSignal) =>
     call<DefinitionResult>('symbols.definition', scopePayload(scope, { ...request }), signal),
+  /** Ctrl+P: fuzzy match the workspace file list. A query that starts with
+   *  `@` matches DECLARATIONS instead (go to symbol), and the answer then
+   *  carries `line`/`column`/`name`/`kind`. */
+  navFind: (scope: SessionScope, request: { query: string; limit?: number }, signal?: AbortSignal) =>
+    call<NavFindResult>('nav.find', scopePayload(scope, { ...request }), signal),
+  /** Ctrl+Alt+O: the declarations of one document, in source order. */
+  symbolsOutline: (scope: SessionScope, request: { path: string }, signal?: AbortSignal) =>
+    call<{ symbols: OutlineSymbol[]; truncated: boolean }>('symbols.outline', scopePayload(scope, { ...request }), signal),
   fsRead: (scope: SessionScope, path: string, signal?: AbortSignal) =>
     call<FsReadResult>('fs.read', scopePayload(scope, { path }), signal),
   /** One page of a large text file, for the read-only paged preview.

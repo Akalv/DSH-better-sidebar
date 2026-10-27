@@ -210,6 +210,8 @@ export function apply(ctx: Context) {
 | Go to definition | `Ctrl/Cmd + Click` / `F12` |
 | Open in a side split | `Alt + Click` |
 | Back / forward | `◀` / `▶` in the editor bar |
+| Quick open (`@` for symbols) | `Ctrl/Cmd + P` |
+| Symbol outline of the open file | `Ctrl/Cmd + Alt + O` |
 | Git commit | `Ctrl + Enter` |
 | Close tab | Middle-click |
 | Split / merge panes | Drag a tab to a pane edge / center |

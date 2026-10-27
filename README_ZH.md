@@ -210,6 +210,8 @@ export function apply(ctx: Context) {
 | 跳转到定义 | `Ctrl/Cmd + 点击` / `F12` |
 | 在右侧分栏打开 | `Alt + 点击` |
 | 后退 / 前进位置 | 编辑器顶部 `◀` / `▶` |
+| 快速打开文件（`@` 搜符号） | `Ctrl/Cmd + P` |
+| 当前文件符号大纲 | `Ctrl/Cmd + Alt + O` |
 | Git 提交 | `Ctrl + Enter` |
 | 关闭 Tab | 鼠标中键 |
 | 拆分/合并分栏 | 拖 Tab 到分栏边缘 / 中间 |

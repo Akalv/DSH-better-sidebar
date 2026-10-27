@@ -114,11 +114,15 @@ describe('the header history arrows', () => {
     try {
       await settle()
       const buttons = navButtons(view.container)
-      expect(buttons).toHaveLength(2)
+      // Back, forward, quick open, outline — the arrows come first.
+      expect(buttons).toHaveLength(4)
       // The first navigation (this file) is the only entry: nothing before it.
       expect(buttons[0]!.disabled).toBe(true)
       expect(buttons[1]!.disabled).toBe(true)
       expect(buttons[0]!.getAttribute('aria-label')).toBeTruthy()
+      // The palette entry points are not history, so they stay enabled.
+      expect(buttons[2]!.disabled).toBe(false)
+      expect(buttons[3]!.disabled).toBe(false)
     } finally {
       view.unmount()
     }
