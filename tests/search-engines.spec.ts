@@ -379,6 +379,46 @@ describe('bundledRgCandidates', () => {
     ))
   })
 
+  // A packaged harness keeps the spawnable tree in `app.asar.unpacked/…`
+  // while the running entry sits inside `app.asar/…`. An asar path cannot be
+  // spawned, so the derivation must mirror itself onto the unpacked sibling:
+  // otherwise the bundled rg exists on disk and is still never probed (the
+  // desktop failure this covers — every lookup fell back to the plain walk).
+  it('derives the unpacked tree from an app.asar entry (win32 desktop)', () => {
+    const resources = 'C:\\Programs\\DeepSeek Harness\\resources'
+    const paths = bundledRgCandidates(
+      'win32', 'x64',
+      `${resources}\\app.asar\\dsh\\node.exe`,
+      {}, 'C:\\Users\\me',
+      `${resources}\\app.asar\\dsh\\index.js`,
+    )
+    expect(paths).toContain(win32.join(
+      resources, 'app.asar.unpacked', 'dsh', 'node_modules',
+      '@vscode', 'ripgrep-win32-x64', 'bin', 'rg.exe',
+    ))
+    // Nothing inside the archive may be offered: it cannot be executed.
+    expect(paths.some(path => path.includes('app.asar' + win32.sep))).toBe(false)
+  })
+
+  it('derives the unpacked tree from an explicit resourcesPath (darwin app)', () => {
+    const resources = '/Applications/Dsh.app/Contents/Resources'
+    const paths = bundledRgCandidates(
+      'darwin', 'arm64',
+      '/usr/local/bin/node',
+      {}, '/Users/me',
+      undefined,
+      resources,
+    )
+    expect(paths).toContain(posix.join(
+      resources, 'app.asar.unpacked', 'dsh', 'node_modules',
+      '@vscode', 'ripgrep-darwin-arm64', 'bin', 'rg',
+    ))
+    expect(paths).toContain(posix.join(
+      resources, 'app.asar.unpacked', 'node_modules',
+      '@vscode', 'ripgrep-darwin-arm64', 'bin', 'rg',
+    ))
+  })
+
   it('covers the DSH profile layout under ~/.dsh on every platform', () => {
     const darwin = bundledRgCandidates('darwin', 'arm64', '/usr/local/bin/node', {}, '/Users/me', undefined)
     expect(darwin).toContain(posix.join(

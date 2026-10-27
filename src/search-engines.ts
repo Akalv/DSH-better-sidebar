@@ -74,6 +74,13 @@ const PATH_SEPARATOR = process.platform === 'win32' ? ';' : ':'
  * Pure in `platform`: every path below is built with that platform's
  * `node:path` dialect (see `P` in the body), so the returned shape depends
  * only on the arguments — never on the OS running the probe.
+ *
+ * A packaged harness (the desktop shell, an asar build) keeps its dependency
+ * tree in `<resources>/app.asar.unpacked/…` while the running entry sits
+ * inside `…/app.asar/…`: an asar archive cannot be spawned, so the real
+ * binary only ever exists on the unpacked side. Both the explicit
+ * `resourcesPath` and the `app.asar` → `app.asar.unpacked` rewrite of the
+ * entry path are therefore derived, in hoisted and non-hoisted shapes.
  */
 export function bundledRgCandidates(
   platform: NodeJS.Platform,
@@ -82,6 +89,7 @@ export function bundledRgCandidates(
   env: NodeJS.ProcessEnv,
   home: string,
   modulePath: string | undefined = process.argv[1],
+  resourcesPath: string | undefined = undefined,
 ): string[] {
   const binName = platform === 'win32' ? 'rg.exe' : 'rg'
   const platformPkg = `@vscode/ripgrep-${platform}-${arch}`
@@ -114,6 +122,27 @@ export function bundledRgCandidates(
   }
   if (modulePath !== undefined && modulePath !== '') walkRoots(modulePath)
   walkRoots(execPath)
+  // Packaged layouts: the archive path cannot be executed, so mirror the
+  // whole derivation onto its `app.asar.unpacked` sibling.
+  const unpackedRoot = (archivePath: string | undefined): string | undefined => {
+    if (archivePath === undefined || archivePath === '') return undefined
+    const marker = `${P.sep}app.asar${P.sep}`
+    const at = archivePath.lastIndexOf(marker)
+    if (at === -1) return undefined
+    return `${archivePath.slice(0, at)}${P.sep}app.asar.unpacked`
+  }
+  const fromEntry = unpackedRoot(modulePath)
+  if (fromEntry !== undefined) {
+    // `<resources>/app.asar.unpacked/{dsh,}/node_modules` — the desktop
+    // shell's tree lives one level below the unpacked root.
+    addRoot(P.join(fromEntry, 'dsh', 'node_modules'))
+    addRoot(P.join(fromEntry, 'node_modules'))
+  }
+  if (resourcesPath !== undefined && resourcesPath !== '') {
+    const fromResources = P.join(resourcesPath, 'app.asar.unpacked')
+    addRoot(P.join(fromResources, 'dsh', 'node_modules'))
+    addRoot(P.join(fromResources, 'node_modules'))
+  }
   // npm global installs. POSIX: <prefix>/lib/node_modules with the executable
   // at <prefix>/bin/node. Windows npm has NO lib/ layer — packages land in
   // %APPDATA%\npm\node_modules (nvm-windows keeps the same %APPDATA%\npm).
@@ -158,7 +187,16 @@ function candidates(engine: Engine): string[] {
   }
   const out: string[] = []
   if (engine === 'rg') {
-    out.push(...bundledRgCandidates(process.platform, process.arch, process.execPath, env, homedir()))
+    const resourcesPath = (process as unknown as { resourcesPath?: unknown }).resourcesPath
+    out.push(...bundledRgCandidates(
+      process.platform,
+      process.arch,
+      process.execPath,
+      env,
+      homedir(),
+      process.argv[1],
+      typeof resourcesPath === 'string' && resourcesPath !== '' ? resourcesPath : undefined,
+    ))
   }
   for (const name of pathNames[engine]) {
     if (env.PATH !== undefined && env.PATH !== '') {

@@ -231,10 +231,11 @@ interface Landing { line: number; column?: number; seq: number }
 
 ### 6.4 定义检索与排序（host `symbols.definition`）
 
-1. 客户端取词：editing chunk 内用 `syntaxTree` + `resolveInner` 拿 token；失败回退 `/[A-Za-z_$][\w$]*/`。只传 `{ path, line, column, word, ext }`。
-2. host 用 `rg --json -n --max-count 8` 在 root 下按 §5.3 的声明正则检索（`rg` 缺失时降级为"当前文件 + 同目录"的 JS 扫描，状态行标注 `已降级`）。
-3. 打分：同文件 +50；当前文件 import 的模块 +40；同目录 +20；路径前缀更短加分；声明种类 class/interface/func > field/var；跨语言候选（node_modules、构建产物）滤掉。
-4. 返回 `{ candidates: SymbolHit[], truncated }`，`SymbolHit = { path, line, column, name, kind, source }`，`source` 是命中原行（用于候选列表与预览）。
+1. 客户端取词：editing chunk 内用 `syntaxTree` + `resolveInner` 拿 token；失败回退 `/[A-Za-z_$][\w$]*/`。只传 `{ path, line, column, word }`。
+2. host **分段检索，先近后远**：当前文件 → 已解析的 import（≤60 文件）→ 同目录（≤300 文件）→ 才做全树扫描。第一个产出声明的段直接作答；只有近处都没有才付出全树代价（P0 实测：同文件/同模块跳转从 ~4.6 s 降到 40–90 ms）。
+3. 全树扫描用 `rg`，参数收窄到源码扩展名（`--glob '*.{ts,tsx,…}'`）、`--max-filesize 512K`、剪掉 `node_modules/.git/dist/lib/build/out/target/coverage/vendor/.next`；5 s 超时即返回空并置 `truncated: true`（不再二次遍历）。探针会识别 `app.asar.unpacked` 布局，桌面版自带的 `rg` 因此可用；无引擎时退回 4000 文件预算的 BFS。
+4. 打分：同文件 +100；import 的模块 +60；同目录 +30；路径更深扣分；class/interface/function +5，var −5。
+5. 返回 `{ candidates: SymbolHit[], truncated }`，`SymbolHit = { path, line, column, name, kind, source, score }`，`source` 是命中原行（用于候选列表与预览）。`truncated` 也覆盖"扫描预算用尽"（大仓库里没找到 ≠ 不存在）。
 
 ### 6.5 文件索引与模糊匹配（host `nav.find`）
 

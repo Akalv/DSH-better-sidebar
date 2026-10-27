@@ -110,6 +110,26 @@ describe('findDefinitions', () => {
     expect(result.candidates.map(hit => hit.path)).toContain(join(root, 'lib', 'util.ts'))
   })
 
+  // The staged lookup stops at the first stage that answers: a name declared
+  // right here must not drag in a same-named declaration from a distant
+  // directory (that sweep is what made every jump cost a whole-tree scan).
+  it('answers from the open file without sweeping the tree', async () => {
+    const file = await put('src/only.ts', 'export function greet() { return 1 }\n')
+    await put('deep/nested/greet.ts', 'export function greet() { return 2 }\n')
+    const result = await findDefinitions({ root, file, word: 'greet' })
+    expect(result.candidates.map(hit => hit.path)).toEqual([file])
+    expect(result.truncated).toBe(false)
+  })
+
+  it('answers from an imported module before touching the rest of the tree', async () => {
+    const file = await put('src/app.ts', "import { helper } from './modules/b'\nhelper()\n")
+    await put('src/modules/b.ts', 'export function helper() { return 2 }\n')
+    // Same-directory decoy: it is not imported, so the import stage wins.
+    await put('src/decoy.ts', 'export function helper() { return 3 }\n')
+    const result = await findDefinitions({ root, file, word: 'helper' })
+    expect(result.candidates.map(hit => hit.path)).toEqual([join(root, 'src', 'modules', 'b.ts')])
+  })
+
   it('returns no candidates for an unknown word — absence is not an error', async () => {
     const file = await put('src/a.ts', 'export const x = 1\n')
     const result = await findDefinitions({ root, file, word: 'missingThing' })
