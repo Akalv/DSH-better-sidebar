@@ -13,6 +13,7 @@ import {
   readySymbols,
   resetFileIndexCache,
   symbolIndexOf,
+  usagesOf,
 } from '../src/file-index.ts'
 import { resetEngines, setEngineHooks } from '../src/search-engines.ts'
 import { setDefinitionIndexLookup, resetDefinitionCache } from '../src/symbols.ts'
@@ -188,5 +189,38 @@ describe('definitionFromIndex', () => {
   it('returns null while the table is cold', async () => {
     const file = await put('src/a.ts', 'export function x() {}\n')
     expect(definitionFromIndex(root, file, 'x')).toBeNull()
+  })
+})
+
+describe('usagesOf', () => {
+  it('lists whole-word call sites, nearest file first', async () => {
+    const here = await put('src/app/main.ts', 'import { boot } from "./boot"\nboot()\nbootAgain()\n')
+    await put('src/app/boot.ts', 'export function boot() {}\n')
+    await put('lib/far.ts', 'boot()\n')
+
+    const { matches, truncated } = await usagesOf(root, here, 'boot')
+    expect(truncated).toBe(false)
+    // Same-file hits first, then the same directory, then the rest. The string
+    // literal `"./boot"` counts too — it is a whole-word match, not a call.
+    expect(matches[0]?.path).toBe(here)
+    expect(matches.map(match => match.path)).toContain(join(root, 'src/app/boot.ts'))
+    expect(matches.at(-1)?.path).toBe(join(root, 'lib/far.ts'))
+    expect(matches.some(match => match.path === here && match.text === 'boot()')).toBe(true)
+    // `bootAgain()` is a different name: whole-word matching must not absorb it.
+    expect(matches.some(match => match.text.startsWith('bootAgain'))).toBe(false)
+  })
+
+  it('caps the answer at the requested limit and flags truncation', async () => {
+    const many = Array.from({ length: 8 }, (_, index) => `hitCall(${index})`).join('\n')
+    const here = await put('src/many.ts', `${many}\n`)
+    await put('src/def.ts', 'function hitCall(value) { return value }\n')
+    const { matches, truncated } = await usagesOf(root, here, 'hitCall', 3)
+    expect(matches).toHaveLength(3)
+    expect(truncated).toBe(true)
+  })
+
+  it('refuses a name that is not an identifier', async () => {
+    const here = await put('src/a.ts', 'const a = 1\n')
+    expect(await usagesOf(root, here, 'a.b(')).toMatchObject({ matches: [], truncated: false })
   })
 })

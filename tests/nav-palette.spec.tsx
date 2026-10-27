@@ -22,6 +22,7 @@ vi.mock('../src/client/api.ts', async (importOriginal) => {
       ...actual.api,
       navFind: vi.fn(),
       symbolsOutline: vi.fn(),
+      symbolsUsages: vi.fn(),
     },
   }
 })
@@ -29,6 +30,7 @@ vi.mock('../src/client/api.ts', async (importOriginal) => {
 const { api } = await import('../src/client/api.ts')
 const navFind = vi.mocked(api.navFind)
 const symbolsOutline = vi.mocked(api.symbolsOutline)
+const symbolsUsages = vi.mocked(api.symbolsUsages)
 
 setupReactAct()
 
@@ -85,8 +87,8 @@ afterEach(() => {
   for (const node of Array.from(document.body.children)) node.remove()
 })
 
-function mount(mode: 'files' | 'outline', path = '/work/src/a.ts'): void {
-  rendered = renderRoot(createElement(NavPalette, { mode, scope, path, onClose, onOpenFile, onOpenFileSide }))
+function mount(mode: 'files' | 'outline' | 'usages', path = '/work/src/a.ts', word?: string): void {
+  rendered = renderRoot(createElement(NavPalette, { mode, scope, path, word, onClose, onOpenFile, onOpenFileSide }))
 }
 
 describe('NavPalette files mode', () => {
@@ -195,5 +197,37 @@ describe('NavPalette outline mode', () => {
     mount('outline')
     await settle()
     expect(dialog().textContent).toContain('No declarations found in this file')
+  })
+})
+
+describe('NavPalette usages mode', () => {
+  const usages = {
+    matches: [
+      { path: '/work/src/a.ts', line: 12, column: 3, text: 'areaOf(shape)' },
+      { path: '/work/src/b.ts', line: 4, column: 1, text: 'const x = areaOf(square)' },
+    ],
+    truncated: false,
+  }
+
+  it('lists the call sites once, then opens one at its line', async () => {
+    symbolsUsages.mockResolvedValue(usages)
+    mount('usages', '/work/src/a.ts', 'areaOf')
+    await settle()
+    expect(symbolsUsages).toHaveBeenCalledWith(scope, { path: '/work/src/a.ts', word: 'areaOf', limit: 200 }, expect.anything())
+    expect(rows().map(row => row.textContent)).toEqual(['areaOf(shape)src/a.ts:12', 'const x = areaOf(square)src/b.ts:4'])
+    await press('Enter')
+    expect(onOpenFile).toHaveBeenCalledWith({ path: '/work/src/a.ts', line: 12, column: 3 })
+  })
+
+  it('filters locally and reports an empty list', async () => {
+    symbolsUsages.mockResolvedValue(usages)
+    mount('usages', '/work/src/a.ts', 'areaOf')
+    await settle()
+    await typeInto('b.ts')
+    expect(symbolsUsages).toHaveBeenCalledTimes(1)
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]?.textContent).toContain('src/b.ts:4')
+    await typeInto('nothing-matches')
+    expect(dialog().textContent).toContain('No usages found')
   })
 })

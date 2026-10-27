@@ -32,7 +32,7 @@ import { createWorkspaceFile, mkdirWorkspaceEntry, renameWorkspaceEntry, removeW
 import { ensureWorkspacePath } from './path-security.ts'
 import { searchFiles } from './fs-search.ts'
 import { findDefinitions, setDefinitionIndexLookup } from './symbols.ts'
-import { definitionFromIndex, find as findInIndex, outlineOf } from './file-index.ts'
+import { definitionFromIndex, find as findInIndex, outlineOf, usagesOf } from './file-index.ts'
 import { compileExcludePatterns } from './exclude-patterns.ts'
 import { decodeHtmlUrl } from './html-route.ts'
 import { registerBundleRoute } from './bundle-route.ts'
@@ -791,6 +791,15 @@ function buildApi(
       const path = await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, 'path'), selected))
       const result = await outlineOf(path)
       return { symbols: result.symbols, truncated: result.truncated, cwd }
+    },
+    'symbols.usages': async (payload) => {
+      const { cwd } = await cwdOf(payload)
+      const selected = selectedRepoOf(payload)
+      const path = await ensureWorkspacePath(cwd, await resolveGitPath(cwd, requireString(payload, 'path'), selected))
+      const word = requireString(payload, 'word')
+      const record = payload as { limit?: unknown } | null
+      const limit = typeof record?.limit === 'number' && Number.isFinite(record.limit) ? Math.floor(record.limit) : undefined
+      return await usagesOf(cwd, path, word, limit)
     },
     'fs.read': async (payload) => {
       const { cwd } = await cwdOf(payload)

@@ -1,26 +1,29 @@
 /**
- * The palette behind Ctrl+P (files, and `@` for declarations) and Ctrl+Alt+O
- * (the open document's outline).
+ * The palette behind Ctrl+P (files, and `@` for declarations), Ctrl+Alt+O
+ * (the open document's outline) and Alt+F7 (where a name is used).
  *
- * One overlay, two sources: the only differences are what fills the row list
+ * One overlay, three sources: the only differences are what fills the row list
  * and what Enter does with a row. Everything the user types goes to
  * `nav.find` for files (the host owns the fuzzy ranking so the whole project
- * path list never crosses the wire), while the outline is fetched once per
- * open and filtered locally — a single document is small enough.
+ * path list never crosses the wire), while the outline and the usage list are
+ * fetched once per open and filtered locally — one document, or one name, is
+ * small enough.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { api, type NavMatch, type OutlineSymbol } from './api.ts'
+import { api, type NavMatch, type OutlineSymbol, type UsageMatch } from './api.ts'
 import type { SessionScope } from './api.ts'
 import { t } from './locales.ts'
-import { baseName } from './paths.ts'
+import { baseName, relativeTo } from './paths.ts'
 import css from './sidebar.module.css'
 
 /** How long a keystroke waits before the palette asks the host. */
 const QUERY_DEBOUNCE_MS = 80
 const RESULT_LIMIT = 60
+/** A usage list is for reading: a couple of hundred call sites is plenty. */
+const USAGE_LIMIT = 200
 
-export type PaletteMode = 'files' | 'outline'
+export type PaletteMode = 'files' | 'outline' | 'usages'
 
 export interface PaletteLocation {
   path: string
@@ -42,6 +45,8 @@ export interface NavPaletteProps {
   scope: SessionScope
   /** The document whose outline is shown (outline mode only). */
   path?: string
+  /** The name whose call sites are listed (usages mode only). */
+  word?: string
   onClose: () => void
   onOpenFile: (location: PaletteLocation) => void
   /** Alt+Enter (or a modifier click) opens in a split instead of in place. */
@@ -87,8 +92,26 @@ function filterOutline(rows: Row[], query: string): Row[] {
   return rows.filter(row => row.label.toLowerCase().includes(needle) || row.kind?.toLowerCase().includes(needle) === true)
 }
 
+function usageRow(cwd: string | undefined, match: UsageMatch): Row {
+  const absolute = /^(?:[A-Za-z]:[\\/]|\/)/.test(match.path) ? match.path : absoluteOf(cwd, match.path)
+  return {
+    key: `${absolute}:${match.line}:${match.column}`,
+    label: match.text === '' ? baseName(match.path) : match.text,
+    detail: `${cwd === undefined ? match.path : relativeTo(cwd, absolute)}:${match.line}`,
+    location: { path: absolute, line: match.line, column: match.column },
+    symbol: false,
+  }
+}
+
+/** A usage list is filtered locally too: it arrives in one fetch. */
+function filterUsages(rows: Row[], query: string): Row[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return rows
+  return rows.filter(row => row.label.toLowerCase().includes(needle) || row.detail.toLowerCase().includes(needle))
+}
+
 export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
-  const { mode, scope, path, onClose, onOpenFile, onOpenFileSide } = props
+  const { mode, scope, path, word, onClose, onOpenFile, onOpenFileSide } = props
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<Row[]>([])
   const [active, setActive] = useState(0)
@@ -96,6 +119,7 @@ export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
   const [failed, setFailed] = useState(false)
   const [truncated, setTruncated] = useState(false)
   const [symbols, setSymbols] = useState<OutlineSymbol[]>([])
+  const [usages, setUsages] = useState<UsageMatch[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const cwd = scope.cwd
@@ -126,6 +150,27 @@ export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, path, scope.sessionId, scope.cwd])
 
+  // Usages: one fetch per open (Alt+F7), then local filtering.
+  useEffect(() => {
+    if (mode !== 'usages' || path === undefined || word === undefined) return
+    const controller = new AbortController()
+    setLoading(true)
+    api.symbolsUsages(scope, { path, word, limit: USAGE_LIMIT }, controller.signal)
+      .then(result => {
+        setUsages(result.matches)
+        setTruncated(result.truncated)
+        setFailed(false)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return
+        setFailed(true)
+        setLoading(false)
+      })
+    return () => controller.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, path, word, scope.sessionId, scope.cwd])
+
   // Files: debounced host query (the host ranks the whole project list).
   useEffect(() => {
     if (mode !== 'files') return
@@ -155,8 +200,9 @@ export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
 
   const visible = useMemo(() => {
     if (mode === 'outline') return filterOutline(symbols.map(symbol => outlineRow(cwd, path ?? '', symbol)), query)
+    if (mode === 'usages') return filterUsages(usages.map(usage => usageRow(cwd, usage)), query)
     return rows
-  }, [mode, rows, symbols, query, cwd, path])
+  }, [mode, rows, symbols, usages, query, cwd, path])
 
   const pick = useCallback((row: Row | undefined, side: boolean): void => {
     if (row === undefined) return
@@ -194,12 +240,19 @@ export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
     }
   }
 
-  const title = mode === 'outline' ? t('navOutline') : t('navQuickOpen')
+  const title = mode === 'outline' ? t('navOutline') : mode === 'usages' ? `${t('navUsages')} · ${word ?? ''}` : t('navQuickOpen')
+  const placeholder = mode === 'outline'
+    ? t('navOutlinePlaceholder')
+    : mode === 'usages'
+      ? t('navUsagesHint')
+      : t('navQuickOpenHint')
   const empty = loading
     ? t('navSearching')
     : mode === 'outline'
       ? t('navOutlineEmpty')
-      : t('navNoMatches')
+      : mode === 'usages'
+        ? t('navUsagesEmpty')
+        : t('navNoMatches')
 
   return createPortal(
     <div className={css.paletteBackdrop} data-mode={mode}>
@@ -208,7 +261,7 @@ export function NavPalette(props: NavPaletteProps): React.ReactElement | null {
           ref={inputRef}
           className={css.paletteInput}
           value={query}
-          placeholder={mode === 'outline' ? t('navOutlinePlaceholder') : t('navQuickOpenHint')}
+          placeholder={placeholder}
           spellCheck={false}
           autoComplete="off"
           aria-label={title}

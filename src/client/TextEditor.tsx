@@ -40,7 +40,7 @@ import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
 import { appendToDraft } from './conversation-draft.ts'
 import { useSelectionPopup } from './selection-popup.ts'
-import { definitionGestures, type DefinitionDisposition, type DefinitionTarget } from './nav-definition.ts'
+import { definitionGestures, definitionTargetAt, type DefinitionDisposition, type DefinitionTarget } from './nav-definition.ts'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
 import { analyzeMarkdownHtml } from './markdown-html.ts'
 import { LazyMermaidMarkdown, MarkdownDocument, type MarkdownHtmlMedia } from './MarkdownHtml.tsx'
@@ -341,6 +341,14 @@ export function TextEditor(props: FileViewerProps) {
   const definitionRef = useRef(requestDefinition)
   useEffect(() => { definitionRef.current = requestDefinition })
 
+  // Alt+F7 (find usages) resolves through a ref for the same reason: the
+  // binding is part of the document's extension set and must not force a
+  // rebuild when the host hands down a new callback.
+  const onFindUsages = props.onFindUsages
+  const findUsages = useCallback((word: string) => { onFindUsages?.(word) }, [onFindUsages])
+  const usagesRef = useRef(findUsages)
+  useEffect(() => { usagesRef.current = findUsages })
+
   const chooseDefinition = (hit: SymbolHit): void => {
     onOpenLocation?.({ path: hit.path, line: hit.line, column: hit.column })
     setDefinitionPicker(null)
@@ -446,6 +454,18 @@ export function TextEditor(props: FileViewerProps) {
         // with the document, but dispatching through the ref above so a new
         // resolver never forces the view (and the draft) to rebuild.
         definitionGestures((target, disposition) => { definitionRef.current(target, disposition) }),
+        // Alt+F7: "find usages" for the name under the caret. The host owns the
+        // panel; an unusable position (whitespace) simply declines the key.
+        keymap.of([{
+          key: 'Alt-F7',
+          preventDefault: true,
+          run: (view) => {
+            const target = definitionTargetAt(view.state, view.state.selection.main.head)
+            if (target === null) return false
+            usagesRef.current(target.word)
+            return true
+          },
+        }]),
         // Selection popup (the code and markdown editors): a non-empty
         // selection anchors the floating "add to conversation" button above
         // its head. Scrolling (geometry/viewport change) or losing focus

@@ -212,6 +212,8 @@ export function apply(ctx: Context) {
 | Back / forward | `◀` / `▶` in the editor bar |
 | Quick open (`@` for symbols) | `Ctrl/Cmd + P` |
 | Symbol outline of the open file | `Ctrl/Cmd + Alt + O` |
+| Find usages of the symbol under the caret | `Alt + F7` |
+| Jump to a line of the open file | type `:131` (or `131`) in the editor bar path input |
 | Git commit | `Ctrl + Enter` |
 | Close tab | Middle-click |
 | Split / merge panes | Drag a tab to a pane edge / center |

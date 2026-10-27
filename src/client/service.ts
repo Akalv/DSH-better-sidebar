@@ -330,6 +330,9 @@ export interface FileViewerProps {
    *  resolves paths or tabs itself. `disposition: 'side'` asks for a rightward
    *  split (Alt+Click). Absent means the viewer offers no jump gesture. */
   onOpenLocation?: (location: { path: string; line?: number; column?: number }, disposition?: 'default' | 'side') => void
+  /** Internal: Alt+F7 in the text editor — list every whole-word occurrence of
+   *  a name. The host owns the panel; a viewer only names the symbol. */
+  onFindUsages?: (word: string) => void
   /** The viewer reports that it has APPLIED the `line` it was handed (or that
    *  the line does not apply to it), and the host stops handing it out: the
    *  line is one navigation, not a mode of the file. The host has to own that

@@ -25,7 +25,7 @@ import type { Dirent } from 'node:fs'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 import { SKIP_DIR_NAMES, usableEngines } from './search-engines.ts'
-import { declarationsIn, isSourceFile, type SymbolHit, type SymbolKind } from './symbols.ts'
+import { declarationsIn, isSourceFile, PRUNE_GLOBS, sourceGlob, type SymbolHit, type SymbolKind } from './symbols.ts'
 
 /** The file list is reused for this long; a stale palette entry is cheap to
  *  fix (the open fails), a palette built on every keystroke is not. */
@@ -377,4 +377,147 @@ export function definitionFromIndex(root: string, file: string, word: string): {
 function dirnameOf(path: string): string {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return cut <= 0 ? path : path.slice(0, cut)
+}
+
+/** One row of a find-usages answer. `text` is the trimmed source line. */
+export interface UsageMatch {
+  path: string
+  line: number
+  column: number
+  text: string
+}
+
+export interface UsageResult {
+  matches: UsageMatch[]
+  truncated: boolean
+}
+
+/** Usages are capped harder than definitions: the list is for reading, not
+ *  for rewriting, so the first screenful of call sites is the useful part. */
+const USAGE_LIMIT = 80
+const USAGE_FILE_LIMIT = 3_000
+const USAGE_TEXT_MAX = 200
+const USAGE_PER_FILE = 12
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function usageText(line: string): string {
+  const trimmed = line.trim()
+  return trimmed.length > USAGE_TEXT_MAX ? `${trimmed.slice(0, USAGE_TEXT_MAX)}…` : trimmed
+}
+
+/** Rank call sites the way a reader looks for them: this file, its directory,
+ *  then the rest of the tree; ties go to the shallower path. */
+function rankUsages(matches: UsageMatch[], root: string, file: string): UsageMatch[] {
+  const dir = dirnameOf(file)
+  const score = (match: UsageMatch): number => {
+    if (match.path === file) return 3
+    if (dirnameOf(match.path) === dir) return 2
+    return 1
+  }
+  return [...matches].sort((a, b) => {
+    const delta = score(b) - score(a)
+    if (delta !== 0) return delta
+    const depth = relative(root, a.path).split(/[\\/]/).length - relative(root, b.path).split(/[\\/]/).length
+    if (depth !== 0) return depth
+    return a.path.localeCompare(b.path) || a.line - b.line
+  })
+}
+
+/** ripgrep is the fast path: whole-word search over the same source-only
+ *  universe the index parses. */
+async function rgUsages(root: string, file: string, word: string, limit: number): Promise<UsageResult | null> {
+  const probes = await usableEngines()
+  const rg = probes.find(probe => probe.engine === 'rg')
+  if (rg === undefined) return null
+  const argv = [
+    '--line-number', '--column', '--no-heading', '--color', 'never',
+    '--max-count', String(USAGE_PER_FILE), '--max-filesize', '512K', '--no-messages',
+    '--word-regexp', '--glob', sourceGlob(), ...PRUNE_GLOBS,
+    '-e', escapeRegExp(word), '--', '.',
+  ]
+  const output = await runList(rg.binary, argv, root)
+  if (output === null) return null
+  const matches: UsageMatch[] = []
+  for (const raw of output.split(/\r?\n/)) {
+    if (raw.trim() === '') continue
+    const parsed = /^(.*?):(\d+):(\d+):(.*)$/.exec(raw)
+    if (parsed === null) continue
+    const path = parsed[1] ?? ''
+    if (path === '') continue
+    matches.push({
+      path: join(root, path.split('/').join(sepOf(root))),
+      line: Number.parseInt(parsed[2] ?? '0', 10),
+      column: Number.parseInt(parsed[3] ?? '0', 10),
+      text: usageText(parsed[4] ?? ''),
+    })
+  }
+  return { matches: rankUsages(matches, root, file).slice(0, limit), truncated: matches.length > limit }
+}
+
+function sepOf(root: string): string {
+  return root.includes('\\') ? '\\' : '/'
+}
+
+/** The no-engine path: read the indexed source files and count whole-word
+ *  hits. Slower than rg, but bounded by the same index and file ceiling. */
+async function scanUsages(root: string, file: string, word: string, limit: number): Promise<UsageResult> {
+  const index = await fileIndexOf(root)
+  const matcher = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'g')
+  const queue = index.files.filter(entry => isSourceFile(entry.path)).slice(0, USAGE_FILE_LIMIT)
+  const matches: UsageMatch[] = []
+  let truncated = index.truncated || queue.length < index.files.length
+  let cursor = 0
+
+  const worker = async (): Promise<void> => {
+    while (cursor < queue.length) {
+      const entry = queue[cursor]
+      cursor += 1
+      if (entry === undefined) return
+      if (matches.length >= limit * 2) {
+        truncated = true
+        return
+      }
+      const full = join(root, entry.path)
+      let text: string
+      try {
+        text = await readFile(full, 'utf8')
+      } catch {
+        continue
+      }
+      if (text.length > PARSE_MAX_BYTES) continue
+      const lines = text.split('\n')
+      let perFile = 0
+      for (let at = 0; at < lines.length; at += 1) {
+        const line = lines[at] ?? ''
+        matcher.lastIndex = 0
+        let found: RegExpExecArray | null
+        while ((found = matcher.exec(line)) !== null) {
+          if (perFile >= USAGE_PER_FILE) break
+          perFile += 1
+          matches.push({ path: full, line: at + 1, column: found.index + 1, text: usageText(line) })
+        }
+        if (perFile >= USAGE_PER_FILE) break
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: PARSE_CONCURRENCY }, worker))
+  return { matches: rankUsages(matches, root, file).slice(0, limit), truncated: truncated || matches.length > limit }
+}
+
+/**
+ * `symbols.usages`: every whole-word occurrence of `word`, ranked by distance
+ * from the file that asked. rg first, the index walk second; either way the
+ * answer is capped so a name used in a thousand places cannot flood the panel.
+ */
+export async function usagesOf(root: string, file: string, word: string, limit = USAGE_LIMIT): Promise<UsageResult> {
+  const bounded = Math.min(Math.max(limit, 1), 200)
+  if (!/^[A-Za-z_$][\w$]{0,63}$/.test(word)) return { matches: [], truncated: false }
+  if (!file.startsWith(root)) return { matches: [], truncated: false }
+  const fromEngine = await rgUsages(root, file, word, bounded)
+  if (fromEngine !== null) return fromEngine
+  return await scanUsages(root, file, word, bounded)
 }

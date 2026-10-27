@@ -470,6 +470,14 @@ export interface OutlineSymbol {
   source: string
 }
 
+/** One call site of `symbols.usages`: where it is, and the line it is on. */
+export interface UsageMatch {
+  path: string
+  line: number
+  column: number
+  text: string
+}
+
 /** The sidebar API surface (session scope threaded through every call). */
 export const api = {
   sessionCwd: (scope: SessionScope, signal?: AbortSignal) =>
@@ -510,6 +518,9 @@ export const api = {
   /** Ctrl+Alt+O: the declarations of one document, in source order. */
   symbolsOutline: (scope: SessionScope, request: { path: string }, signal?: AbortSignal) =>
     call<{ symbols: OutlineSymbol[]; truncated: boolean }>('symbols.outline', scopePayload(scope, { ...request }), signal),
+  /** Alt+F7: every whole-word occurrence of one name, nearest files first. */
+  symbolsUsages: (scope: SessionScope, request: { path: string; word: string; limit?: number }, signal?: AbortSignal) =>
+    call<{ matches: UsageMatch[]; truncated: boolean }>('symbols.usages', scopePayload(scope, { ...request }), signal),
   fsRead: (scope: SessionScope, path: string, signal?: AbortSignal) =>
     call<FsReadResult>('fs.read', scopePayload(scope, { path }), signal),
   /** One page of a large text file, for the read-only paged preview.

@@ -517,13 +517,13 @@ async function dirScan(dir: string, word: string): Promise<SymbolHit[]> {
 /** The glob that keeps a project-wide sweep on source files: without it a
  *  large workspace spends seconds inside documents, data and generated JSON
  *  that can never hold a declaration. */
-function sourceGlob(): string {
+export function sourceGlob(): string {
   const exts = [...SOURCE_EXTS].map(ext => ext.slice(1)).sort()
   return `*.{${exts.join(',')}}`
 }
 
 /** Directories a sweep never needs to enter. */
-const PRUNE_GLOBS = [
+export const PRUNE_GLOBS = [
   '!**/node_modules/**', '!**/.git/**', '!**/dist/**', '!**/lib/**',
   '!**/build/**', '!**/out/**', '!**/target/**', '!**/coverage/**',
   '!**/vendor/**', '!**/.next/**',

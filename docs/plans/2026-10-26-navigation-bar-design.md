@@ -1,7 +1,7 @@
 # 文件栏导航改造设计（IDEA 风格文件跳转）
 
 > 日期: 2026-10-26
-> 状态: P1（步骤 1–5）与 P2 的文件索引 / 快速打开 / 符号大纲已交付（见 §7）；P3 待排期
+> 状态: P1（步骤 1–5）、P2（文件索引 / 快速打开 / 符号大纲）与 P3 的查找引用、跳转到行已交付（见 §7）；预览定义与相关文件待排期
 > 分支(拟): `feat/navigation-bar`
 > 影响面: client 核心包、editor 懒加载分块、host 侧新增 3 条只读路由
 
@@ -38,9 +38,9 @@
 | 侧边分屏打开 | `Alt+Click` | 复用 `openFileSide` | P1 |
 | 当前文件符号 | `Ctrl+F12` | 符号面包屑 + 浮层/大纲面板 | P2 ✅ `Ctrl+Alt+O` |
 | 快速打开文件 | `Ctrl+Shift+N` | `Ctrl+P` 快速面板 | P2 ✅ |
-| 跳转到行 | `Ctrl+G` | 复用 CodeMirror gotoLine | P2 |
+| 跳转到行 | `Ctrl+G` | 头部路径输入接受 `:131` / `131`（`Ctrl+G` 已被“查找下一个”占用） | P3 ✅ |
 | 跳转 import 模块 | `Ctrl+Click` | 按语言解析表 | P2 |
-| 查找用法 | `Alt+F7` | 结果列表逐条跳转 | P3 |
+| 查找用法 | `Alt+F7` | 结果列表逐条跳转 | P3 ✅ |
 | 预览定义 | `Ctrl+Shift+I` | AnchoredPopover 片段 | P3 |
 | 相关文件 / 测试文件 | `Ctrl+Shift+T` | `⋯` 菜单 | P3 |
 
@@ -256,7 +256,7 @@ interface Landing { line: number; column?: number; seq: number }
 | `symbols.definition` | `{ path, line, column, word }` | `{ candidates, truncated }` |
 | `nav.find` | `{ query, limit? }` | `{ matches: { path, score, line?, column?, name?, kind? }[], total, truncated, source }` |
 | `symbols.outline` | `{ path }` | `{ symbols: SymbolHit[], truncated, cwd }` |
-| `symbols.usages` | `{ path, name, limit? }` | `{ matches: { path, line, text }[], truncated }`（P3） |
+| `symbols.usages` | `{ path, word, limit? }` | `{ matches: { path, line, column, text }[], truncated }`（P3 ✅） |
 
 `nav.find` 的 `source` 为 `files` / `symbols`：`query` 以 `@` 开头时匹配声明（`@` 之后才是查询词）。三条只读路由都走会话作用域（`sessionQuery` + `ctx.workingDirectory`），沿用现有错误封装；与 v0.23.0 起的行为一致，不做工作区围栏（OS 权限兜底）。
 
@@ -285,7 +285,14 @@ interface Landing { line: number; column?: number; seq: number }
 - 测试（已交付）：`tests/file-index.spec.ts`、`tests/nav-palette.spec.tsx`
 - 未做：跳转到行（`Ctrl+G`）与 `Alt+F7` 用法检索（P3）。
 
-**P3**：`symbols.usages`、Peek 浮层、相关文件、可选 TS 语言服务（读工作区 `typescript`，缺失自动降级）。
+**P3（查找引用 / 跳转到行 已交付）**
+
+- 新增（已交付）：`src/file-index.ts` 的 `usagesOf`（rg `--word-regexp` 快路径 + 索引内整词扫描兜底，`USAGE_LIMIT=80`、每文件 12 条、按“本文件 → 同目录 → 其余”排序）；客户端 `api.symbolsUsages`、`NavPalette` 的 `usages` 模式（一次取回、本地过滤）
+- 修改（已交付）：`EditorHost.tsx`（`palette` 从模式字符串扩为 `{ mode, word? }`，Alt+F7 打开引用面板；头部路径输入接受 `:131` / `131` 并落到行）、`TextEditor.tsx`（`Alt-F7` 键绑定，取光标下符号）、`service.ts`（`FileViewerProps.onFindUsages`）、`symbols.ts`（导出 `sourceGlob` / `PRUNE_GLOBS` 供索引用）
+- **`Ctrl+G` 冲突**：`README` 的快捷键表里 `Ctrl+G` 已是“查找下一个”（CodeMirror `searchKeymap`），故跳转到行改由头部路径输入承接（`Ctrl+G` 保留原语义）；这是对 §3 表格的一次修正。
+- 测试（已交付）：`tests/file-index.spec.ts`（`usagesOf` 3 例）、`tests/nav-palette.spec.tsx`（`usages` 模式 2 例）、`tests/text-editor-usages.spec.tsx`（`Alt+F7` 2 例）
+
+**P3 未做**：Peek 浮层、相关文件 / 测试文件、可选 TS 语言服务（读工作区 `typescript`，缺失自动降级）。
 
 ## 8. 交付与验收
 

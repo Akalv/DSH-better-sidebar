@@ -168,8 +168,8 @@ export function EditorHost(props: {
     setLanding({ line, column, epoch: landingEpoch.current })
   }, [])
   const onLineConsumed = useCallback(() => { setLanding(null) }, [])
-  // Ctrl+P / Ctrl+Alt+O: one overlay, two sources (see NavPalette).
-  const [palette, setPalette] = useState<PaletteMode | null>(null)
+  // Ctrl+P / Ctrl+Alt+O / Alt+F7: one overlay, three sources (see NavPalette).
+  const [palette, setPalette] = useState<{ mode: PaletteMode; word?: string } | null>(null)
   // A location this host armed for the NEXT path effect. In-place switching
   // (merged mode) has no `tab.line` to carry it: updateTab drops the transient
   // line with the old path, so the jump has to be remembered across that one
@@ -386,13 +386,13 @@ export function EditorHost(props: {
     if (event.altKey) {
       if (key === 'o') {
         event.preventDefault()
-        setPalette('outline')
+        setPalette({ mode: 'outline' })
       }
       return
     }
     if (!event.shiftKey && key === 'p') {
       event.preventDefault()
-      setPalette('files')
+      setPalette({ mode: 'files' })
     }
   }
 
@@ -734,7 +734,7 @@ export function EditorHost(props: {
             className={css.iconButton}
             aria-label={t('navQuickOpen')}
             title={`${t('navQuickOpen')} (Ctrl+P)`}
-            onClick={() => setPalette('files')}
+            onClick={() => setPalette({ mode: 'files' })}
           >
             <IconSearchOutlineRegular size={14} />
           </button>
@@ -743,12 +743,21 @@ export function EditorHost(props: {
             className={css.iconButton}
             aria-label={t('navOutline')}
             title={`${t('navOutline')} (Ctrl+Alt+O)`}
-            onClick={() => setPalette('outline')}
+            onClick={() => setPalette({ mode: 'outline' })}
           >
             <IconChecklistOutlineRegular size={14} />
           </button>
         </div>
-        <EditorPathInput key={path} path={path} cwd={scope.cwd} onOpen={openFile} />
+        <EditorPathInput
+          key={path}
+          path={path}
+          cwd={scope.cwd}
+          onOpen={openFile}
+          onJumpLine={(line) => {
+            requestLanding(line)
+            nav.record({ path, line, title })
+          }}
+        />
         {toolbar?.modes === true && (
           <div className={css.editorModeToggle}>
             <button
@@ -830,6 +839,7 @@ export function EditorHost(props: {
             lineEpoch: landing?.epoch,
             column: landing?.column,
             onOpenLocation: openLocation,
+            onFindUsages: (word: string) => setPalette({ mode: 'usages', word }),
             onLineConsumed,
             content: load.content,
             size: load.size,
@@ -887,9 +897,10 @@ export function EditorHost(props: {
       </div>
       {palette !== null && (
         <NavPalette
-          mode={palette}
+          mode={palette.mode}
           scope={scope}
           path={path}
+          word={palette.word}
           onClose={() => setPalette(null)}
           onOpenFile={openLocation}
           onOpenFileSide={location => openLocation(location, 'side')}
@@ -907,13 +918,25 @@ export function EditorHost(props: {
  * per-path dedupe tab); Escape/blur restores the current value. The parent
  * keys it by `path` so an in-place switch remounts and reseeds the draft.
  */
-function EditorPathInput(props: { path: string; cwd: string | undefined; onOpen: (path: string) => void }) {
-  const { path, cwd, onOpen } = props
+function EditorPathInput(props: {
+  path: string
+  cwd: string | undefined
+  onOpen: (path: string) => void
+  /** `:131` (or a bare line number) means "this line of THIS file". */
+  onJumpLine?: (line: number) => void
+}) {
+  const { path, cwd, onOpen, onJumpLine } = props
   const display = path === '' ? '' : relativeTo(cwd ?? '', path)
   const [value, setValue] = useState(display)
 
   const commit = (): void => {
     const input = value.trim()
+    const lineOnly = /^:?(\d{1,7})$/.exec(input)
+    if (lineOnly !== null && onJumpLine !== undefined && path !== '') {
+      onJumpLine(Number.parseInt(lineOnly[1] ?? '1', 10))
+      setValue(display)
+      return
+    }
     if (input === '' || input === display) {
       setValue(display)
       return
