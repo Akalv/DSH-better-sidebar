@@ -35,6 +35,14 @@
  *   them while the view is not writable), never straight to the remote —
  *   otherwise two windows' keystrokes would interleave.
  *
+ * - The SHELL is the host's own choice with one Windows correction: where the
+ *   host would start cmd.exe and the environment also offers PowerShell 7,
+ *   this view asks for pwsh explicitly (preferredShellPath in
+ *   ./terminal-client.ts); "no opinion" leaves the host resolving its default,
+ *   which is the cmd fallback. The path must be known BEFORE the first
+ *   view(), because the host memoizes one model per key and refuses a shell it
+ *   did not discover — hence the pending status below.
+ *
  * Colors come from theme tokens: the stylesheet paints the screen from
  * `--dsw-*` / `--ds-*` and the concrete values are read back through
  * `getComputedStyle`, the same token bridge `theme.ts` documents for xterm's
@@ -42,7 +50,7 @@
  */
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import '@xterm/xterm/css/xterm.css'
 import type { Context } from '../context-types.ts'
 import type { SessionScope } from './api.ts'
@@ -50,8 +58,8 @@ import type { SidebarTab } from './state.ts'
 import { t } from './locales.ts'
 import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import {
-  bottomTerminalContentId, nextTerminalMeta, terminalInstanceOf, terminalRunOf, webTerminals,
-  type HostTerminalEnvironment, type HostTerminalView, type HostTerminalViewState,
+  bottomTerminalContentId, launchShellResolution, nextTerminalMeta, terminalInstanceOf, terminalRunOf, webTerminals,
+  type HostTerminalEnvironment, type HostTerminalView, type HostTerminalViewState, type WebTerminalsFace,
 } from './terminal-client.ts'
 import css from './terminal.module.css'
 
@@ -82,9 +90,10 @@ export function TerminalBottomView({ ctx, scope, tab, visible }: TerminalBottomP
   // `view()` allocates the terminal eagerly and memoizes one model per
   // (session, key) on the host side, so this memo must be the ONLY creation
   // path: a repeat `view()` for the same key is free, a new key is a new PTY.
+  const shell = useLaunchShell(service, sessionId)
   const model = useMemo(
-    () => service?.view(sessionId, contentId, contentId),
-    [service, sessionId, contentId],
+    () => (shell.ready ? service?.view(sessionId, contentId, contentId, undefined, shell.path) : undefined),
+    [service, sessionId, contentId, shell],
   )
   const state = useSyncExternalStore(
     useMemo(() => (callback: () => void) => model?.state.subscribe(callback) ?? (() => {}), [model]),
@@ -110,6 +119,15 @@ export function TerminalBottomView({ ctx, scope, tab, visible }: TerminalBottomP
     return (
       <section className={css.root} data-dsh-bottom-terminal data-terminal-state="unavailable">
         <p className={css.notice} role="alert">{t('terminalUnavailable')}</p>
+      </section>
+    )
+  }
+  if (!shell.ready) {
+    // The shell discovery answers in one round trip; allocating the terminal
+    // before it returns would start the host's default (cmd.exe) for good.
+    return (
+      <section className={css.root} data-dsh-bottom-terminal data-terminal-state="loading">
+        <div className={css.status} role="status"><span>{t('loading')}</span></div>
       </section>
     )
   }
@@ -186,6 +204,50 @@ function statusOf(state: HostTerminalViewState): string | undefined {
  */
 function reconnectable(state: HostTerminalViewState): boolean {
   return state.phase === 'failed' || state.phase === 'disconnected'
+}
+
+/** What the next view() may pass as shellPath: pending, or the answer. */
+type LaunchShell =
+  | { readonly ready: false }
+  | { readonly ready: true; readonly path: string | undefined }
+
+/**
+ * The shell this tab's terminal should launch: PowerShell 7 where the host
+ * would start cmd.exe, the host's own choice everywhere else (see
+ * launchShellResolution in ./terminal-client.ts).
+ *
+ * The preference has to be in hand BEFORE the first view(), because the host
+ * memoizes one model per key and refuses a shell path it did not discover, so
+ * the path cannot be corrected after the terminal exists. Hence the pending
+ * state: one cached discovery round trip per Session, then every tab and every
+ * "new terminal" in it launches with the same answer.
+ * @param service - the host terminal service, when the deployment has one.
+ * @param sessionId - the tab's Session (the discovery is session-scoped).
+ */
+function useLaunchShell(service: WebTerminalsFace | undefined, sessionId: string): LaunchShell {
+  const resolution = useMemo(
+    () => (service === undefined ? undefined : launchShellResolution(service, sessionId)),
+    [service, sessionId],
+  )
+  const initial = useMemo<LaunchShell>(
+    () => (resolution === undefined || resolution.settled
+      ? { ready: true, path: resolution?.path }
+      : { ready: false }),
+    [resolution],
+  )
+  const [choice, setChoice] = useState<LaunchShell>(initial)
+  useEffect(() => {
+    if (initial.ready || resolution === undefined) {
+      setChoice(initial)
+      return
+    }
+    let live = true
+    void resolution.promise.then((path) => {
+      if (live) setChoice({ ready: true, path })
+    })
+    return () => { live = false }
+  }, [initial, resolution])
+  return choice
 }
 
 interface TerminalScreenProps {

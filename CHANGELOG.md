@@ -2,6 +2,11 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### Unreleased
+
+- **新建终端优先 PowerShell 7，缺了再落回 cmd**：底部终端此前把 shell 完全交给宿主，而宿主在 Windows 上的默认 shell 取自 `ComSpec`（本机是 `cmd.exe`），于是「新建终端」永远是 cmd。现在分配前用宿主自己的 shell 列表判断一次（`webTerminals.launchShells`）：**只有宿主选中的正是 cmd 时**才改选列表里的 `pwsh`，并把宿主**发现出来的确切路径**传给 `view()`——路径必须是宿主 `shells()` 的返回值，猜的路径会被宿主以「Selected shell is not available in this execution environment」直接拒掉，所以这里不做任何猜测。宿主没有 pwsh、或探测失败，行为与之前逐字相同（落回宿主默认，即 cmd）；POSIX 的 `$SHELL` / login shell、以及 profile 里配置的 `shell:` 一律不覆盖。等待宿主答复期间终端显示既有的 loading 态，探测按会话缓存一次，多标签不重复请求；更老的宿主没有 `launchShells` 时这条偏好整体不生效、页签照常工作。副作用：宿主会记住这次选择（`dsh.terminal.shell`），DSH 自带的终端此后也默认 pwsh。
+- 🧪 测试：`tests/terminal-tab.spec.tsx` 新增 `describe('terminal-bottom: the launch shell')` 7 例（kind 解析、`preferredShellPath` 矩阵含「宿主已选 pwsh」「非 cmd 默认值不动」「pwsh 缺席」「空列表」、按发现路径分配、pwsh 缺席或探测抛错时落回默认、pending 期间不分配且答到后带上 pwsh、同一会话两个页签只探测一次），`FakeTerminals` 的 `viewCalls` 记录可选 `shellPath`，新增 `ShellTerminals` 模拟 `launchShells`。
+
 ### v0.28.0
 
 - **正式版支持线前移到 DSH 0.2.1-rc.1+**：13 条 DSH peer 下限统一为 `^0.2.1-rc.1`，开发依赖、CI 与安装脚本使用精确 RC 基线。不新增运行时兼容层、不改功能实现。

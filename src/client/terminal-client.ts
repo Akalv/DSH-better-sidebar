@@ -121,6 +121,24 @@ export interface HostTerminalView {
   close(): Promise<void>
 }
 
+/**
+ * One shell the host verified in this Session's execution environment
+ * (`Shell` in the pinned controller): `path` is already PATH-resolved, `args`
+ * is the host's own profile for that kind (`[]` for cmd, `['-NoLogo']` for
+ * PowerShell).
+ */
+export interface HostShell {
+  readonly path: string
+  readonly name: string
+  readonly args: readonly string[]
+}
+
+/** Installed shells plus the one the host would start for a new terminal. */
+export interface HostShellLaunch {
+  readonly shells: readonly HostShell[]
+  readonly selectedShell?: string | undefined
+}
+
 /** The service slice this plugin consumes. */
 export interface WebTerminalsFace {
   view(
@@ -138,6 +156,15 @@ export interface WebTerminalsFace {
   close(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId): void
   /** Query host terminals without a live view or unfinished close. */
   recover(sessionId: string): Promise<HostTerminalInfo[]>
+  /**
+   * Installed shells together with the one the host would start for a NEW
+   * terminal.
+   *
+   * OPTIONAL on purpose: the member is newer than view(), and a deployment
+   * without it must keep opening terminals — the shell preference simply does
+   * not apply — instead of degrading the whole tab.
+   */
+  launchShells?(sessionId: string, signal?: AbortSignal): Promise<HostShellLaunch>
 }
 
 /**
@@ -154,6 +181,130 @@ export function webTerminals(ctx: Context): WebTerminalsFace | undefined {
   if (typeof service.view !== 'function' || typeof service.close !== 'function') return undefined
   if (typeof service.recover !== 'function') return undefined
   return service as WebTerminalsFace
+}
+
+/**
+ * The shell kind of a path, read the way the host reads it: the executable
+ * name, lowercased, one trailing .exe dropped — so cmd.exe, CMD and
+ * C:\WINDOWS\system32\cmd.exe all read as cmd.
+ * @param path - an absolute shell path.
+ */
+export function shellKindOf(path: string): string {
+  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+  return name.toLowerCase().replace(/\.exe$/u, '')
+}
+
+/** The shell names this plugin prefers over the host's Windows default. */
+const PREFERRED_SHELLS = ['pwsh'] as const
+
+/**
+ * The shell path a NEW terminal should launch, or undefined meaning "no
+ * opinion — keep the host's own default".
+ *
+ * A stock Windows install makes the host start cmd.exe:
+ * dsh-subprocess-local reports ComSpec as the execution environment's default
+ * shell, and the controller resolves a shell from it. Where the host would do
+ * exactly that AND the environment also offers a preferred shell, the plugin
+ * asks for the preferred one instead. Keying on the HOST's own selection is
+ * what keeps this honest — a POSIX $SHELL, a login shell, or a
+ * profile-configured shell is never overridden — and undefined leaves the
+ * host resolving its default, which is the cmd fallback when pwsh is absent.
+ *
+ * The returned path is one the host just DISCOVERED, never a guess: the host
+ * refuses a shell path it did not discover ("Selected shell is not available
+ * in this execution environment"), while "no path" merely means the host
+ * decides.
+ * @param launch - the host's shell discovery result.
+ */
+export function preferredShellPath(launch: HostShellLaunch): string | undefined {
+  const selected = launch.selectedShell ?? launch.shells[0]?.path
+  if (selected === undefined) return undefined
+  // Any other default (bash, zsh, a configured shell) is already the user's
+  // intent, and PowerShell is not what it asks for.
+  if (shellKindOf(selected) !== 'cmd') return undefined
+  for (const kind of PREFERRED_SHELLS) {
+    const shell = launch.shells.find(candidate => shellKindOf(candidate.path) === kind)
+    if (shell !== undefined) return shell.path
+  }
+  return undefined
+}
+
+/** A launch-shell lookup for one Session, settled or still in flight. */
+export interface ShellResolution {
+  /** Resolves to the shell path, or undefined to keep the host's default. */
+  readonly promise: Promise<string | undefined>
+  /** Whether {@link ShellResolution.path} is already known. */
+  readonly settled: boolean
+  /** The resolved path; undefined means the host keeps its own choice. */
+  readonly path: string | undefined
+}
+
+/** The mutable side of a resolution (settled in place, read as a snapshot). */
+interface PendingShellResolution {
+  promise: Promise<string | undefined>
+  settled: boolean
+  path: string | undefined
+}
+
+/** Upper bound on remembered lookups: a Session id is cheap, but not free. */
+const MAX_SHELL_RESOLUTIONS = 32
+
+/**
+ * One lookup per service and Session. The bottom workbench mounts one view per
+ * tab and re-renders it constantly, so the discovery must not run per render;
+ * the service is the WeakMap key, so a replaced service can never read a stale
+ * answer.
+ */
+const shellResolutions = new WeakMap<object, Map<string, PendingShellResolution>>()
+
+/**
+ * The launch-shell preference for one Session, discovering it on first use.
+ *
+ * A failed round trip resolves to undefined (the host's default) instead of
+ * rejecting: a terminal that cannot be improved is still a terminal that has to
+ * open.
+ * @param service - the host terminal service.
+ * @param sessionId - the Session whose execution environment is asked.
+ * @returns the lookup, or undefined when this host exposes no discovery.
+ */
+export function launchShellResolution(
+  service: WebTerminalsFace,
+  sessionId: string,
+): ShellResolution | undefined {
+  const launch = service.launchShells
+  if (typeof launch !== 'function') return undefined
+  let perSession = shellResolutions.get(service)
+  if (perSession === undefined) {
+    perSession = new Map<string, PendingShellResolution>()
+    shellResolutions.set(service, perSession)
+  }
+  const cached = perSession.get(sessionId)
+  if (cached !== undefined) return cached
+  // The snapshot object is mutated by the promise, so a synchronous read after
+  // the insert (the next tab's initial state) sees the same answer.
+  const entry: PendingShellResolution = { promise: Promise.resolve(undefined), settled: false, path: undefined }
+  // bind(), not a bare reference: the host method reads its own this.remote.
+  const discover = launch.bind(service)
+  entry.promise = discover(sessionId).then(
+    result => preferredShellPath(result),
+    () => undefined,
+  ).then((path) => {
+    entry.path = path
+    entry.settled = true
+    return path
+  })
+  // Eviction keeps the map bounded; a still-pending entry is awaited by a
+  // mounted view, so only a settled one is dropped.
+  if (perSession.size >= MAX_SHELL_RESOLUTIONS) {
+    for (const [key, value] of perSession) {
+      if (value.settled) {
+        perSession.delete(key)
+        break
+      }
+    }
+  }
+  perSession.set(sessionId, entry)
+  return entry
 }
 
 /** Namespace for the plugin's own occurrence key and content identity. */

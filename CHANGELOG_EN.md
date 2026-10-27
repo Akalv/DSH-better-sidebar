@@ -4,6 +4,11 @@
 >
 > 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
+### Unreleased
+
+- **New terminals prefer PowerShell 7, and fall back to cmd**: the bottom terminal now asks the host for its own shell list once per Session (`webTerminals.launchShells`) and switches to a discovered `pwsh` **only when the host itself would start `cmd`**; the exact discovered path goes to `view()`, because a guessed path is rejected by the host, so a missing or unreachable pwsh leaves the previous behaviour untouched. POSIX `$SHELL`/login shell and a profile `shell:` are never overridden, and hosts older than the `launchShells` API ignore the preference entirely.
+- 🧪 Tests: `tests/terminal-tab.spec.tsx` gained `describe('terminal-bottom: the launch shell')` with 7 cases (kind parsing, the `preferredShellPath` matrix, allocation with the discovered path, fallback when pwsh is missing or discovery throws, holding the allocation while pending, one discovery per Session).
+
 ### v0.28.0
 
 - **Stable plugin support moves to DSH 0.2.1-rc.1+**: all 13 DSH peer floors are `^0.2.1-rc.1`; development dependencies, CI and installers pin the exact RC baseline. No runtime compatibility layer or feature implementation changes are introduced.

@@ -16,6 +16,9 @@
  *    then `acknowledge` — an unacknowledged frame stops output for good).
  * 3. DEGRADATION: a deployment without the host service renders the
  *    explanation instead of throwing, and the + menu row is disabled.
+ * 4. LAUNCH SHELL: the host's own default, corrected only where it would be
+ *    cmd.exe — PowerShell 7 is asked for by its DISCOVERED path (the host
+ *    refuses a guess), and no pwsh simply leaves the host default (cmd).
  *
  * xterm itself is mocked: jsdom cannot open a real emulator (no canvas, no
  * ResizeObserver), and the assertions are about the plumbing AROUND it. The
@@ -35,8 +38,8 @@ import { allLeaves, createSidebarStore, openTabInBottomPane } from '../src/clien
 import { createBetterSidebarService, type TabDescriptor } from '../src/client/service.ts'
 import { builtinTabs } from '../src/client/builtins/tabs.tsx'
 import {
-  bottomTerminalContentId, nextTerminalMeta, terminalInstanceOf, terminalRunOf,
-  type HostTerminalView, type HostTerminalViewState, type WebTerminalsFace,
+  bottomTerminalContentId, nextTerminalMeta, preferredShellPath, shellKindOf, terminalInstanceOf, terminalRunOf,
+  type HostShell, type HostShellLaunch, type HostTerminalView, type HostTerminalViewState, type WebTerminalsFace,
 } from '../src/client/terminal-client.ts'
 import { TerminalBottomView } from '../src/client/TerminalView.tsx'
 
@@ -181,12 +184,16 @@ class FakeView implements HostTerminalView {
 class FakeTerminals implements WebTerminalsFace {
   readonly views = new Map<string, FakeView>()
   readonly bindings = new Map<string, string>()
-  readonly viewCalls: Array<{ sessionId: string; key: string; contentId: string; terminalId?: string }> = []
+  readonly viewCalls: Array<{ sessionId: string; key: string; contentId: string; terminalId?: string; shellPath?: string }> = []
   readonly closeCalls: Array<{ sessionId: string; key: string; contentId: string }> = []
   allocated = 0
 
-  view(sessionId: string, key: string, contentId: string, terminalId?: string): HostTerminalView {
-    this.viewCalls.push({ sessionId, key, contentId, ...(terminalId === undefined ? {} : { terminalId }) })
+  view(sessionId: string, key: string, contentId: string, terminalId?: string, shellPath?: string): HostTerminalView {
+    this.viewCalls.push({
+      sessionId, key, contentId,
+      ...(terminalId === undefined ? {} : { terminalId }),
+      ...(shellPath === undefined ? {} : { shellPath }),
+    })
     const memo = `${sessionId}\u0000${key}`
     const existing = this.views.get(memo)
     if (existing !== undefined) return existing
@@ -678,6 +685,129 @@ describe('terminal-bottom: several terminals in one session (#774 follow-up)', (
       bottomTerminalContentId(0, 'a'),
       bottomTerminalContentId(0, 'b'),
     ])
+    first.unmount()
+    second.unmount()
+  })
+})
+
+
+/**
+ * A host double that also answers the shell discovery. The answer is supplied
+ * per test: an immediate result, a rejection (a host that fails the round
+ * trip), or a promise the test resolves later (the in-flight case).
+ */
+class ShellTerminals extends FakeTerminals {
+  shellCalls = 0
+  readonly answer: () => Promise<HostShellLaunch>
+
+  constructor(answer: () => Promise<HostShellLaunch>) {
+    super()
+    this.answer = answer
+  }
+
+  launchShells(): Promise<HostShellLaunch> {
+    this.shellCalls += 1
+    return this.answer()
+  }
+}
+
+/** The shells a stock Windows install reports, plus a POSIX one for contrast. */
+const CMD: HostShell = { path: 'C:\\WINDOWS\\system32\\cmd.exe', name: 'cmd.exe', args: [] }
+const PWSH: HostShell = { path: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', name: 'pwsh.exe', args: ['-NoLogo'] }
+const BASH: HostShell = { path: '/usr/bin/bash', name: 'bash', args: ['-i'] }
+
+describe('terminal-bottom: the launch shell', () => {
+  it('reads shell kinds the way the host does', () => {
+    expect(shellKindOf(CMD.path)).toBe('cmd')
+    expect(shellKindOf(PWSH.path)).toBe('pwsh')
+    expect(shellKindOf('/bin/zsh')).toBe('zsh')
+  })
+
+  it('asks for PowerShell 7 only where the host would start cmd', () => {
+    expect(preferredShellPath({ shells: [CMD, PWSH], selectedShell: CMD.path })).toBe(PWSH.path)
+    // No selectedShell: the host's own discovery puts the default first.
+    expect(preferredShellPath({ shells: [CMD, PWSH] })).toBe(PWSH.path)
+    // The host already starts something the user chose: no opinion from here.
+    expect(preferredShellPath({ shells: [BASH, CMD], selectedShell: BASH.path })).toBeUndefined()
+    expect(preferredShellPath({ shells: [PWSH, CMD], selectedShell: PWSH.path })).toBeUndefined()
+    // pwsh is absent: undefined means "host default", i.e. the cmd fallback.
+    expect(preferredShellPath({ shells: [CMD], selectedShell: CMD.path })).toBeUndefined()
+    expect(preferredShellPath({ shells: [] })).toBeUndefined()
+  })
+
+  it('allocates the terminal with the discovered pwsh path, never a guess', async () => {
+    const terminals = new ShellTerminals(async () => ({ shells: [CMD, PWSH], selectedShell: CMD.path }))
+    const { ctx } = viewSetup(terminals)
+    const { unmount } = render(ctx, bottomTab())
+    await flush()
+
+    expect(terminals.viewCalls).toHaveLength(1)
+    expect(terminals.viewCalls[0]?.shellPath).toBe(PWSH.path)
+    unmount()
+  })
+
+  it('leaves a host default that is not cmd alone', async () => {
+    const terminals = new ShellTerminals(async () => ({ shells: [BASH, CMD], selectedShell: BASH.path }))
+    const { ctx } = viewSetup(terminals)
+    const { unmount } = render(ctx, bottomTab())
+    await flush()
+
+    expect(terminals.viewCalls[0]?.shellPath, 'the host pick is the user intent').toBeUndefined()
+    expect(xterm.emulators, 'the terminal still opens').toHaveLength(1)
+    unmount()
+  })
+
+  it('falls back to the host default when pwsh is missing or discovery fails', async () => {
+    for (const answer of [
+      async (): Promise<HostShellLaunch> => ({ shells: [CMD], selectedShell: CMD.path }),
+      async (): Promise<HostShellLaunch> => { throw new Error('shell discovery unavailable') },
+    ]) {
+      const terminals = new ShellTerminals(answer)
+      const { ctx } = viewSetup(terminals)
+      const emulators = xterm.emulators.length
+      const { unmount } = render(ctx, bottomTab())
+      await flush()
+
+      expect(terminals.viewCalls).toHaveLength(1)
+      expect(terminals.viewCalls[0]?.shellPath).toBeUndefined()
+      expect(xterm.emulators, "the terminal still opens").toHaveLength(emulators + 1)
+      unmount()
+    }
+  })
+
+  it('holds the allocation until the preference resolves, showing the pending status', async () => {
+    let release: ((value: HostShellLaunch) => void) | undefined
+    const terminals = new ShellTerminals(() => new Promise<HostShellLaunch>((resolve) => { release = resolve }))
+    const { ctx } = viewSetup(terminals)
+    const { container, unmount } = render(ctx, bottomTab())
+    await flush()
+
+    expect(terminals.viewCalls, 'nothing is allocated while the shell is unresolved').toHaveLength(0)
+    const section = container.querySelector('[data-dsh-bottom-terminal]')
+    expect(section?.getAttribute('data-terminal-state')).toBe('loading')
+    expect(container.textContent).toContain(t('loading'))
+
+    await act(async () => {
+      release!({ shells: [CMD, PWSH], selectedShell: CMD.path })
+      await Promise.resolve()
+    })
+    await flush()
+
+    expect(terminals.viewCalls).toHaveLength(1)
+    expect(terminals.viewCalls[0]?.shellPath).toBe(PWSH.path)
+    expect(xterm.emulators).toHaveLength(1)
+    unmount()
+  })
+
+  it('discovers the preference once per Session, not per tab', async () => {
+    const terminals = new ShellTerminals(async () => ({ shells: [CMD, PWSH], selectedShell: CMD.path }))
+    const { ctx } = viewSetup(terminals)
+    const first = render(ctx, bottomTab())
+    const second = render(ctx, bottomTab({ terminalInstance: 'b' }))
+    await flush()
+
+    expect(terminals.shellCalls).toBe(1)
+    expect(terminals.viewCalls.map(call => call.shellPath)).toEqual([PWSH.path, PWSH.path])
     first.unmount()
     second.unmount()
   })
